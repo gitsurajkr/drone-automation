@@ -8,7 +8,11 @@ class TelemetryData:
         if self.vehicle is None:
             return None
 
-        loc = getattr(self.vehicle.location, "global_frame", None)
+        # Prefer the relative frame so altitude is relative to the home (AGL).
+        # Fall back to the global frame if the relative frame isn't available.
+        loc = getattr(self.vehicle.location, "global_relative_frame", None)
+        if loc is None:
+            loc = getattr(self.vehicle.location, "global_frame", None)
         att = getattr(self.vehicle, "attitude", None)
         vel = getattr(self.vehicle, "velocity", None)
         gps = getattr(self.vehicle, "gps_0", None)
@@ -39,7 +43,13 @@ class TelemetryData:
         # }
 
         def fmt(val):
-            return round(val, 2) if isinstance(val, float) else val
+            # Support both float and int values for rounding.
+            if isinstance(val, (float, int)):
+                try:
+                    return round(float(val), 2)
+                except Exception:
+                    return val
+            return val
 
         rc_data = None
         if rc_channels:

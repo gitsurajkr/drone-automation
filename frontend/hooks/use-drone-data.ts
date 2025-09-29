@@ -134,9 +134,9 @@ export function useDroneData() {
 
           orientation: {
             // convert attitude (radians) -> degrees for UI and map rotation
-            roll: radToDeg(payload.attitude?.roll ?? 0),
-            pitch: radToDeg(payload.attitude?.pitch ?? 0),
-            yaw: radToDeg(payload.attitude?.yaw ?? 0),
+            roll: payload.attitude?.roll ?? 0,
+            pitch: payload.attitude?.pitch ?? 0,
+            yaw: payload.attitude?.yaw ?? 0,
             // prefer explicit payload.heading (0..360) when available, otherwise normalize yaw
             heading: typeof payload.heading === 'number' ? payload.heading : ((radToDeg(payload.attitude?.yaw ?? 0) + 360) % 360),
           },
@@ -197,20 +197,22 @@ export function useDroneData() {
     return () => window.removeEventListener('logs:clear', handler as EventListener)
   }, [])
 
-  const sendCommand = (command: string, payload?: any) => {
-    if (wsRef.current && wsRef.current.readyState === 1) {
-      const msg: any = { command };
-      if (payload !== undefined) msg.payload = payload;
-      wsRef.current.send(JSON.stringify(msg));
-      setLogs((prev) => [
-        ...prev.slice(-99),
-        { id: Date.now().toString(), message: `Command sent: ${command}`, timestamp: Date.now(), type: "command" },
-      ]);
-      toast.success(`Command sent: ${command}`);
-    } else {
-      toast.error("WebSocket not connected");
-    }
-  };
+const sendCommand = async (command: string, payload?: any): Promise<void> => {
+  if (wsRef.current && wsRef.current.readyState === 1) {
+    const msg: any = { type: command };
+    if (payload !== undefined) msg.payload = payload;
+    wsRef.current.send(JSON.stringify(msg));
+
+    setLogs((prev) => [
+      ...prev.slice(-99),
+      { id: Date.now().toString(), message: `Command sent: ${command}`, timestamp: Date.now(), type: "command" },
+    ]);
+    toast.success(`Command sent: ${command}`);
+  } else {
+    toast.error("WebSocket not connected");
+  }
+};
+
 
   // For unimplemented features (ARM, DISARM, etc.)
   const notImplemented = (feature: string) => {
@@ -228,6 +230,6 @@ export function useDroneData() {
     isConnected,
     telemetryHistory,
     sendCommand,
-    notImplemented, // use this for UI buttons that aren't wired up yet
+    notImplemented,
   }
 }

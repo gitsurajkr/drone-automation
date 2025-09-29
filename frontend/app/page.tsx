@@ -3,7 +3,6 @@
 import { useDroneData } from "@/hooks/use-drone-data"
 import { TelemetryDashboard } from "@/components/telemetry-dashboard"
 import { EnhancedMapView } from "@/components/map-view"
-// import { MapPreview } from "@/components/map-preview"
 import { VideoFeed } from "@/components/video-feed"
 import { ControlPanel } from "@/components/control-panel"
 import { AlertsPanel } from "@/components/alerts-panel"
@@ -18,11 +17,12 @@ export default function DroneDashboard() {
   const [currentView, setCurrentView] = useState<"dashboard" | "map">("dashboard")
   const [pythonConnected, setPythonConnected] = useState<boolean | null>(null)
 
+  // Poll backend for health every 3s
   useEffect(() => {
     let mounted = true
-    const check = async () => {
+    const checkHealth = async () => {
       try {
-        const res = await fetch('http://localhost:4001/health')
+        const res = await fetch("http://localhost:4001/health")
         if (!mounted) return
         if (res.ok) {
           const json = await res.json()
@@ -30,17 +30,17 @@ export default function DroneDashboard() {
         } else {
           setPythonConnected(false)
         }
-      } catch (e) {
+      } catch {
         if (!mounted) return
         setPythonConnected(false)
       }
     }
 
-    check()
-    const id = setInterval(check, 3000)
+    checkHealth()
+    const intervalId = setInterval(checkHealth, 3000)
     return () => {
       mounted = false
-      clearInterval(id)
+      clearInterval(intervalId)
     }
   }, [])
 
@@ -71,7 +71,7 @@ export default function DroneDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div className="text-sm text-muted-foreground font-mono">Last Update: {droneData ? new Date(droneData.timestamp).toLocaleTimeString() : '—'}</div>
+          <div className="text-sm text-muted-foreground font-mono">Last Update: {droneData ? new Date(droneData.timestamp).toLocaleTimeString() : "—"}</div>
         </div>
       </div>
 
@@ -80,13 +80,18 @@ export default function DroneDashboard() {
           <div className="lg:col-span-2 space-y-6">
             <TelemetryDashboard data={droneData} history={telemetryHistory} />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* <MapPreview droneData={droneData} onOpenFullMap={() => setCurrentView("map")} isConnected={isConnected} /> */}
               <VideoFeed />
             </div>
           </div>
 
           <div className="space-y-6">
-            <ControlPanel onCommand={sendCommand} droneData={droneData} isConnected={isConnected} pythonConnected={pythonConnected} />
+            <ControlPanel
+              onCommand={sendCommand}
+              droneData={droneData}
+              isConnected={isConnected}
+              pythonConnected={pythonConnected}
+              setPythonConnected={setPythonConnected}
+            />
             <AlertsPanel alerts={alerts} />
             <LogsPanel logs={logs} />
           </div>
@@ -98,10 +103,6 @@ export default function DroneDashboard() {
           alerts={alerts}
           logs={logs}
           isConnected={isConnected}
-          // pass pythonConnected in case EnhancedMapView wants to reflect backend state
-          // it's optional there
-          // @ts-ignore
-          pythonConnected={pythonConnected}
         />
       )}
     </div>
