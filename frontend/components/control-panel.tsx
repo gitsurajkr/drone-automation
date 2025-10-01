@@ -10,14 +10,15 @@ import type { DroneData } from "@/hooks/use-drone-data"
 import toast from "react-hot-toast"
 
 interface ControlPanelProps {
-  onCommand: (command: string, payload?: any) => Promise<void>
+  onCommand: (command: string, payload?: any) => Promise<any>
   droneData?: DroneData | null
   isConnected?: boolean
-  pythonConnected?: boolean | null
-  setPythonConnected?: (val: boolean) => void
+  pythonConnected?: boolean
+  droneConnected?: boolean
+  setDroneConnected?: (val: boolean) => void
 }
 
-export function ControlPanel({ onCommand, droneData, isConnected, pythonConnected, setPythonConnected }: ControlPanelProps) {
+export function ControlPanel({ onCommand, droneData, isConnected, pythonConnected, droneConnected, setDroneConnected }: ControlPanelProps) {
   const [throttle, setThrottle] = useState<number[]>([50])
   const [connProcessing, setConnProcessing] = useState(false)
   const [localArmed, setLocalArmed] = useState<boolean>(droneData?.armed ?? false)
@@ -33,15 +34,24 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
   const handleCommandAsync = async (command: string, payload?: any) => {
     setConnProcessing(true)
     try {
-      await onCommand(command, payload)
+      const response = await onCommand(command, payload)
 
-      // Success toast messages
+      // Handle response and update drone connection status
+      if (response && typeof response === 'object' && 'drone_connected' in response) {
+        setDroneConnected?.(response.drone_connected as boolean)
+      }
+
+      // Success toast messages based on actual response
       if (command === "connect") {
-        toast.success("🟢 Drone connected successfully!")
-        if (setPythonConnected) setPythonConnected(true)
+        const connected = response && typeof response === 'object' && response.drone_connected
+        if (connected) {
+          toast.success("🟢 Drone connected successfully!")
+        } else {
+          toast.error("❌ Drone connection failed - WebSocket OK but no drone")
+        }
       } else if (command === "disconnect") {
-        toast.success("🔴 Drone disconnected safely")
-        if (setPythonConnected) setPythonConnected(false)
+        toast.success("🔴 Drone disconnected")
+        setDroneConnected?.(false)
       } else if (command === "arm") {
         toast.success("⚠️ Drone ARMED - Ready for flight")
         setLocalArmed(true)
@@ -52,7 +62,7 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
         toast.success("🚨 EMERGENCY DISARM successful")
         setLocalArmed(false)
       } else {
-        toast.success(`Command "${command}" executed successfully`)
+        toast.success(`Command "${command}" executed`)
       }
 
     } catch (e) {
@@ -61,17 +71,17 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
 
       // Error toast messages
       if (command === "connect") {
-        toast.error(`❌ Failed to connect: ${errorMsg}`)
+        toast.error(`❌ Connection failed: ${errorMsg}`)
       } else if (command === "disconnect") {
-        toast.error(`❌ Failed to disconnect: ${errorMsg}`)
+        toast.error(`❌ Disconnect failed: ${errorMsg}`)
       } else if (command === "arm") {
-        toast.error(`⚠️ Failed to ARM drone: ${errorMsg}`)
+        toast.error(`⚠️ Failed to ARM: ${errorMsg}`)
       } else if (command === "disarm") {
-        toast.error(`❌ Failed to DISARM drone: ${errorMsg}`)
+        toast.error(`❌ Failed to DISARM: ${errorMsg}`)
       } else if (command === "emergency_disarm") {
         toast.error(`🚨 EMERGENCY DISARM FAILED: ${errorMsg}`)
       } else {
-        toast.error(`Failed to execute ${command}: ${errorMsg}`)
+        toast.error(`Failed: ${command} - ${errorMsg}`)
       }
     } finally {
       setConnProcessing(false)
@@ -108,20 +118,28 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
         {/* Connection Controls */}
         <div className="flex gap-2 items-center">
           <Button
-            onClick={() => handleCommandAsync(pythonConnected ? "disconnect" : "connect")}
-            disabled={connProcessing || pythonConnected === null}
-            variant={pythonConnected ? "destructive" : "default"}
+            onClick={() => handleCommandAsync(droneConnected ? "disconnect" : "connect")}
+            disabled={connProcessing || !isConnected}
+            variant={droneConnected ? "destructive" : "default"}
+            className={`min-w-[100px] ${connProcessing ? 'opacity-50' : ''}`}
           >
-            {connProcessing ? (pythonConnected ? "Disconnecting..." : "Connecting...") : pythonConnected ? "Disconnect" : "Connect"}
+            {connProcessing ? (
+              <span className="flex items-center gap-2">
+                <span className="animate-spin">⏳</span>
+                {droneConnected ? "Disconnecting..." : "Connecting..."}
+              </span>
+            ) : (
+              droneConnected ? "🔴 Disconnect" : "🟢 Connect"
+            )}
           </Button>
 
           <Button
             onClick={() => handleCommandAsync("status")}
-            disabled={connProcessing || pythonConnected !== true}
+            disabled={connProcessing || !isConnected}
             variant="outline"
             size="sm"
           >
-            Status
+            📊 Status
           </Button>
         </div>
 
@@ -129,7 +147,7 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
         <div className="flex gap-2 items-center">
           <Button
             onClick={handleToggleArm}
-            disabled={connProcessing || pythonConnected !== true}
+            disabled={connProcessing || !droneConnected}
             variant={localArmed ? "destructive" : "default"}
           >
             {localArmed ? "DISARM" : "ARM"}

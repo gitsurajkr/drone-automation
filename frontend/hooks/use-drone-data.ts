@@ -55,7 +55,7 @@ export function useDroneData() {
   const [isConnected, setIsConnected] = useState(false)
   const [telemetryHistory, setTelemetryHistory] = useState<DroneData[]>([])
   const wsRef = useRef<WebSocket | null>(null)
-  const pendingRef = useRef<Map<string, { resolve: () => void, reject: (err?: any) => void }>>(new Map())
+  const pendingRef = useRef<Map<string, { resolve: (value?: any) => void, reject: (err?: any) => void }>>(new Map())
 
 
 
@@ -136,7 +136,7 @@ export function useDroneData() {
             const pending = pendingRef.current.get(msg.id);
             if (pending) {
               if (msg.status && msg.status === 'ok') {
-                pending.resolve();
+                pending.resolve(msg); // Return the full response including drone_connected
                 // Log successful command response
                 setLogs((prev) => [
                   ...prev.slice(-99),
@@ -196,14 +196,14 @@ export function useDroneData() {
     return () => window.removeEventListener('logs:clear', handler as EventListener)
   }, [])
 
-  const sendCommand = async (command: string, payload?: any): Promise<void> => {
+  const sendCommand = (command: string, payload?: any): Promise<any> => {
     if (wsRef.current && wsRef.current.readyState === 1) {
       const id = Date.now().toString() + Math.random().toString(36).slice(2, 8)
       const msg: any = { type: command, id };
       if (payload !== undefined) msg.payload = payload;
 
       // Send and create a pending promise that will resolve when backend responds with same id
-      const promise = new Promise<void>((resolve, reject) => {
+      const promise = new Promise<any>((resolve, reject) => {
         pendingRef.current.set(id, { resolve, reject })
         try {
           wsRef.current?.send(JSON.stringify(msg))

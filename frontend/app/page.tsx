@@ -15,31 +15,42 @@ import { useState, useEffect } from "react"
 export default function DroneDashboard() {
   const { droneData, alerts, logs, isConnected, telemetryHistory, sendCommand } = useDroneData()
   const [currentView, setCurrentView] = useState<"dashboard" | "map">("dashboard")
-  const [pythonConnected, setPythonConnected] = useState<boolean | null>(null)
+  const [pythonConnected, setPythonConnected] = useState<boolean>(false) // WebSocket connection to Python
+  const [droneConnected, setDroneConnected] = useState<boolean>(false) // Actual drone connection
+  const [backendHealthy, setBackendHealthy] = useState<boolean>(false)
 
   // Poll backend for health every 3s
   useEffect(() => {
     let mounted = true
     const checkHealth = async () => {
       try {
-        const res = await fetch("http://localhost:4001/health")
+        const res = await fetch("http://localhost:4001/health") // Backend health endpoint
         if (!mounted) return
         if (res.ok) {
           const json = await res.json()
-          setPythonConnected(Boolean(json.pythonConnected))
+          setBackendHealthy(true)
+          // Only update pythonConnected if we got a valid response
+          if (typeof json.pythonConnected === 'boolean') {
+            setPythonConnected(json.pythonConnected)
+          }
         } else {
+          setBackendHealthy(false)
           setPythonConnected(false)
         }
       } catch {
         if (!mounted) return
+        setBackendHealthy(false)
         setPythonConnected(false)
       }
     }
 
-    checkHealth()
+    // Initial check with slight delay to avoid flickering
+    const initialTimeout = setTimeout(checkHealth, 100)
     const intervalId = setInterval(checkHealth, 3000)
+
     return () => {
       mounted = false
+      clearTimeout(initialTimeout)
       clearInterval(intervalId)
     }
   }, [])
@@ -50,7 +61,20 @@ export default function DroneDashboard() {
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
           <h1 className="text-2xl font-bold text-balance">FlightOps Console</h1>
-          <Badge variant={isConnected ? "default" : "destructive"}>{isConnected ? "Connected" : "Disconnected"}</Badge>
+          <div className="flex gap-2">
+            <Badge variant={isConnected ? "default" : "destructive"}>
+              {isConnected ? "🟢 Frontend" : "🔴 Frontend"}
+            </Badge>
+            <Badge variant={backendHealthy ? "default" : "destructive"}>
+              {backendHealthy ? "🟢 Backend" : "🔴 Backend"}
+            </Badge>
+            <Badge variant={pythonConnected ? "default" : "destructive"}>
+              {pythonConnected ? "🟢 Python WS" : "🔴 Python WS"}
+            </Badge>
+            <Badge variant={droneConnected ? "default" : "destructive"}>
+              {droneConnected ? "🟢 Drone" : "🔴 Drone"}
+            </Badge>
+          </div>
           <div className="flex gap-2">
             <Button
               variant={currentView === "dashboard" ? "default" : "outline"}
@@ -88,9 +112,10 @@ export default function DroneDashboard() {
             <ControlPanel
               onCommand={sendCommand}
               droneData={droneData}
-              isConnected={isConnected}
+              isConnected={isConnected && backendHealthy}
               pythonConnected={pythonConnected}
-              setPythonConnected={setPythonConnected}
+              droneConnected={droneConnected}
+              setDroneConnected={setDroneConnected}
             />
             <AlertsPanel alerts={alerts} />
             <LogsPanel logs={logs} />
