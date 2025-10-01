@@ -8,11 +8,10 @@ class TelemetryData:
         if self.vehicle is None:
             return None
 
-        # Prefer the relative frame so altitude is relative to the home (AGL).
-        # Fall back to the global frame if the relative frame isn't available.
-        loc = getattr(self.vehicle.location, "global_relative_frame", None)
-        if loc is None:
-            loc = getattr(self.vehicle.location, "global_frame", None)
+        # Grab both relative and global frames so we can expose both AGL and MSL altitudes.
+        # Prefer the relative frame (global_relative_frame) for the primary 'alt' value when available.
+        loc_rel = getattr(self.vehicle.location, "global_relative_frame", None)
+        loc_global = getattr(self.vehicle.location, "global_frame", None)
         att = getattr(self.vehicle, "attitude", None)
         vel = getattr(self.vehicle, "velocity", None)
         gps = getattr(self.vehicle, "gps_0", None)
@@ -61,9 +60,11 @@ class TelemetryData:
         data = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "location": {
-                "lat": fmt(loc.lat) if loc else None,
-                "lon": fmt(loc.lon) if loc else None,
-                "alt": fmt(loc.alt) if loc else None
+                "lat": fmt((loc_rel or loc_global).lat) if (loc_rel or loc_global) else None,
+                "lon": fmt((loc_rel or loc_global).lon) if (loc_rel or loc_global) else None,
+                "alt": fmt(loc_rel.alt) if loc_rel and hasattr(loc_rel, "alt") else (fmt(loc_global.alt) if loc_global and hasattr(loc_global, "alt") else None),
+                "alt_rel": fmt(loc_rel.alt) if loc_rel and hasattr(loc_rel, "alt") else None,
+                "alt_global": fmt(loc_global.alt) if loc_global and hasattr(loc_global, "alt") else None,
             },
             "attitude": {
                 "roll": fmt(att.roll) if att else None,

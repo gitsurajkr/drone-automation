@@ -15,23 +15,47 @@ class Controller:
 
         vehicle = self.connection.vehicle
 
+        # Check heartbeat freshness
+        last_heartbeat = getattr(vehicle, "last_heartbeat", None)
+        if last_heartbeat is not None and last_heartbeat > 5.0:
+            print(f"Vehicle heartbeat too old: {last_heartbeat}s")
+            return False
+
         if require_armable and not getattr(vehicle, "is_armable", False):
             print("Vehicle is not armable.")
             return False
 
-        # GPS check
+        # GPS check - more strict for arming
         gps = getattr(vehicle, "gps_0", None)
         if gps is not None:
             fix = getattr(gps, "fix_type", 0) or 0
-            if fix < 3:
-                print(f"GPS fix not sufficient (fix_type={fix}).")
+            if require_armable and fix < 3:  # Only strict for arming
+                print(f"GPS fix not sufficient for arming (fix_type={fix}, need ≥3).")
+                return False
+            elif fix < 2:  # Basic connectivity check
+                print(f"GPS fix too poor (fix_type={fix}).")
                 return False
 
         # Battery check
-        batt_level = getattr(getattr(vehicle, "battery", None), "level", None)
-        if batt_level is not None and batt_level < 20:
-            print(f"Battery level too low ({batt_level}%).")
-            return False
+        battery = getattr(vehicle, "battery", None)
+        if battery is not None:
+            batt_level = getattr(battery, "level", None)
+            if batt_level is not None and batt_level < 20:
+                print(f"Battery level too low ({batt_level}%, need ≥20%).")
+                return False
+            
+            # Check battery voltage if available
+            voltage = getattr(battery, "voltage", None)
+            if voltage is not None and voltage < 10.5:  # For 3S LiPo minimum
+                print(f"Battery voltage too low ({voltage}V).")
+                return False
+
+        # Check system status if available
+        if hasattr(vehicle, 'system_status'):
+            sys_status = getattr(vehicle.system_status, 'state', 'UNKNOWN')
+            if require_armable and sys_status not in ['STANDBY', 'ACTIVE']:
+                print(f"Vehicle not in safe state: {sys_status}")
+                return False
 
         return True
 
@@ -87,4 +111,29 @@ class Controller:
             return True
         except Exception as e:
             print(f"Disarming failed: {e}")
+            return False
+
+    async def emergency_disarm(self):
+        """Emergency disarm - bypasses most safety checks for critical situations."""
+        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
+            print("Vehicle not connected - cannot emergency disarm.")
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        if not getattr(vehicle, "armed", False):
+            print("Vehicle already disarmed.")
+            return True
+
+        try:
+            print("EMERGENCY DISARM - Forcing disarm...")
+            vehicle.armed = False
+            # Shorter timeout for emergency
+            if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 5.0, desc="emergency disarming"):
+                print("Emergency disarm timeout - vehicle may still be armed!")
+                return False
+            print("Emergency disarm successful.")
+            return True
+        except Exception as e:
+            print(f"Emergency disarm failed: {e}")
             return False

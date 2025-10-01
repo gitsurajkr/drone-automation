@@ -96,16 +96,3 @@ class Connection:
     #         # "mode": getattr(self.vehicle.mode, "name", None),
     #     }
     #     return status
-
-
-# if __name__ == "__main__":
-#     async def main():
-#         conn = Connection()
-#         connected = await conn.connect("/dev/ttyACM0", 115200)
-#         if not connected:
-#             print("Failed to connect to vehicle.")
-#             return
-#         await asyncio.sleep(10)  # Keep connection for 10 seconds
-#         await conn.disconnect()
-
-#     asyncio.run(main())

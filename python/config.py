@@ -1,6 +1,3 @@
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-REDIS_CHANNEL = "telemetry_channel"
 WS_HOST = "0.0.0.0"
 WS_PORT = 8765
 DRONE_ID = "drone_001"
