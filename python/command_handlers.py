@@ -5,16 +5,30 @@ import json
 from typing import Dict, Any, Optional
 
 
-async def handle_connect(start_telemetry_func) -> Dict[str, Any]:
+async def handle_connect(start_telemetry_func, conn) -> Dict[str, Any]:
     # Handle connect command
-    await start_telemetry_func()
-    return {"status": "ok", "detail": "telemetry started"}
+    try:
+        await start_telemetry_func()
+        controller = getattr(conn, "controller", None)
+        drone_connected = controller is not None and controller.vehicle is not None
+        
+        if drone_connected:
+            return {"status": "ok", "detail": "drone connected successfully", "drone_connected": True}
+        else:
+            # If drone connection failed, treat the entire operation as failed
+            return {"status": "error", "detail": "drone connection failed - no vehicle detected", "drone_connected": False}
+            
+    except Exception as e:
+        return {"status": "error", "detail": f"connection failed: {str(e)}", "drone_connected": False}
 
 
-async def handle_disconnect(stop_telemetry_func) -> Dict[str, Any]:
+async def handle_disconnect(stop_telemetry_func, conn) -> Dict[str, Any]:
     # Handle disconnect command
-    await stop_telemetry_func()
-    return {"status": "ok", "detail": "telemetry stopped"}
+    try:
+        await stop_telemetry_func()
+        return {"status": "ok", "detail": "drone disconnected and telemetry stopped", "drone_connected": False}
+    except Exception as e:
+        return {"status": "error", "detail": f"disconnect failed: {str(e)}", "drone_connected": False}
 
 
 async def handle_reconnect(reconnect_telemetry_func) -> Dict[str, Any]:
@@ -25,7 +39,8 @@ async def handle_reconnect(reconnect_telemetry_func) -> Dict[str, Any]:
 
 async def handle_status(drone_connected: bool) -> Dict[str, Any]:
     # Handle status command
-    return {"status": "ok", "drone_connected": drone_connected}
+    detail = "drone is connected" if drone_connected else "drone is not connected"
+    return {"status": "ok", "detail": detail, "drone_connected": drone_connected}
 
 
 async def handle_arm(conn) -> Dict[str, Any]:
@@ -139,9 +154,9 @@ async def execute_command(
         return {"status": "error", "detail": f"unknown command: {command_type}"}
     
     if command_type == "connect":
-        return await handler(start_telemetry_func)
+        return await handler(start_telemetry_func, conn)
     elif command_type == "disconnect":
-        return await handler(stop_telemetry_func)
+        return await handler(stop_telemetry_func, conn)
     elif command_type == "reconnect":
         return await handler(reconnect_telemetry_func)
     elif command_type == "status":
