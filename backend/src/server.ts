@@ -5,6 +5,8 @@ const NODE_WS_PORT = 4000;
 
 const wss = new WebSocketServer({ port: NODE_WS_PORT });
 const clients = new Set<WebSocket>();
+// Map of pending command IDs -> originating frontend WebSocket
+const pendingRequests: Map<string, WebSocket> = new Map();
 
 wss.on('connection', (ws) => {
     clients.add(ws);
@@ -19,37 +21,47 @@ wss.on('connection', (ws) => {
         const raw = data.toString();
         console.log('Received from frontend:', raw);
 
-        let commandToSend: string | null = null;
-        let jsonToSend: string | null = null;
+        // Always try to send JSON commands to Python first
         try {
             const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed.command === 'string') {
-                const cmd = parsed.command.toLowerCase();
-                if (['connect', 'disconnect', 'reconnect', 'status'].includes(cmd)) {
-                    commandToSend = cmd;
-                } else {
-                    jsonToSend = JSON.stringify(parsed);
+            if (parsed && (parsed.type || parsed.command)) {
+                // Forward all JSON commands directly to Python
+                if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
+                    // Store pending request for response routing
+                    const maybeId = parsed.id;
+                    if (maybeId && typeof maybeId === 'string') {
+                        pendingRequests.set(maybeId, ws);
+                    }
+                    pythonWs.send(raw);
+                    return;
                 }
-            } else {
-                commandToSend = raw;
             }
         } catch (e) {
-            commandToSend = raw;
+            // Fall back to legacy text command handling
+            const cmd = raw.toLowerCase();
+            if (['connect', 'disconnect', 'reconnect', 'status', 'arm', 'disarm'].includes(cmd)) {
+                if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
+                    pythonWs.send(cmd);
+                    return;
+                }
+            }
         }
 
-        if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
-            try {
-                if (commandToSend) pythonWs.send(commandToSend);
-                else if (jsonToSend) pythonWs.send(jsonToSend);
-                else pythonWs.send(raw);
-            } catch (err) {
-                console.error('Failed to send to Python WS:', err);
-                try { ws.send(JSON.stringify({ error: 'Failed to forward to Python WS' })); } catch { };
-            }
-        } else {
-            console.warn('Python WS not connected; cannot forward message');
-            try { ws.send(JSON.stringify({ error: 'Python backend not connected' })); } catch { };
-        }
+        // If we reach here, Python WS is not connected
+        console.warn('Python WS not connected; cannot forward message');
+        try {
+            ws.send(JSON.stringify({
+                error: 'Python backend not connected',
+                id: (() => {
+                    try {
+                        const parsed = JSON.parse(raw);
+                        return parsed.id;
+                    } catch {
+                        return null;
+                    }
+                })()
+            }));
+        } catch { }
     });
 });
 
@@ -82,12 +94,28 @@ function connectPythonWS() {
     pythonWs.on('open', () => {
         console.log('Connected to Python WS server');
         pythonConnected = true;
-        pythonWs?.send("connect");
+        // Don't auto-connect to drone, let frontend control this
     });
 
     pythonWs.on('message', (data) => {
         const msg = data.toString();
         console.log('Python WS says:', msg);
+
+        // Try to parse and route responses back to the originating client when an id is present.
+        try {
+            const parsed = JSON.parse(msg);
+            const respId = parsed && parsed.id;
+            if (respId && typeof respId === 'string') {
+                const origin = pendingRequests.get(respId);
+                if (origin && origin.readyState === WebSocket.OPEN) {
+                    origin.send(msg);
+                    pendingRequests.delete(respId);
+                    return;
+                }
+            }
+        } catch (e) {
+            // not JSON — fall through to broadcast
+        }
 
         for (const client of clients) {
             if (client.readyState === WebSocket.OPEN) {
