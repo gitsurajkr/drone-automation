@@ -55,34 +55,9 @@ export function useDroneData() {
   const [isConnected, setIsConnected] = useState(false)
   const [telemetryHistory, setTelemetryHistory] = useState<DroneData[]>([])
   const wsRef = useRef<WebSocket | null>(null)
+  const pendingRef = useRef<Map<string, { resolve: () => void, reject: (err?: any) => void }>>(new Map())
 
-  // const ws = new WebSocket('ws://localhost:4000');
 
-  // ws.onmessage = (event) => {
-  //   // event.data contains the telemetry data as a string (usually JSON)
-  //   const telemetry = JSON.parse(event.data);
-  //   console.log('Telemetry:', telemetry);
-  // };
-
-  // {"drone_id": "drone_001", 
-  //   "event_type": "DATA", 
-  //   "payload": 
-  //   {"timestamp": "2025-09-26T05:37:04.808643Z", 
-  //     "location": 
-  //     {"lat": 0.0, 
-  //       "lon": 0.0, 
-  //       "alt": 0.27}, 
-  //       "attitude": {"roll": 0.02, 
-  //         "pitch": 0.0,
-  //          "yaw": -3.1}, 
-  //          "velocity": {"vx": -0.27, 
-  //           "vy": -0.16, 
-  //           "vz": -0.11}, 
-  //           "battery": 
-  //           {"voltage": 0.0, 
-  //             "current": null, 
-  //             "level": null
-  //           }, "gps": {"satellites_visible": 0, "fix_type": 1, "eph": 9999, "epv": 9999}, "heading": 182, "groundspeed": 0.31, "airspeed": 0.0, "climb_rate": 0.0, "rc_channels": {}, "home_position": {"lat": 0.0, "lon": 0.0, "alt": 0.0}, "flight_time": 0.0, "status_text": "", "ekf": {"ok": false}, "armed": false, "mode": "STABILIZE", "last_heartbeat": 0.23, "system_status": "SystemStatus:STANDBY"}}
 
   useEffect(() => {
     let shouldStop = false;
@@ -119,7 +94,8 @@ export function useDroneData() {
         const batteryLevel = payload.battery?.level ?? payload.battery?.voltage ?? 0;
 
         return {
-          altitude: payload.location?.alt ?? 0,
+          // Prefer relative altitude (alt_rel) if the backend provided it (AGL). Fall back to alt.
+          altitude: typeof payload.location?.alt_rel === 'number' ? payload.location.alt_rel : (payload.location?.alt ?? 0),
           velocity: {
             vx: payload.velocity?.vx ?? 0,
             vy: payload.velocity?.vy ?? 0,
@@ -155,6 +131,29 @@ export function useDroneData() {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          // If this is a response to a pending command, resolve the promise
+          if (msg && msg.id) {
+            const pending = pendingRef.current.get(msg.id);
+            if (pending) {
+              if (msg.status && msg.status === 'ok') {
+                pending.resolve();
+                // Log successful command response
+                setLogs((prev) => [
+                  ...prev.slice(-99),
+                  { id: Date.now().toString(), message: `Command response: ${JSON.stringify(msg)}`, timestamp: Date.now(), type: "system" },
+                ]);
+              } else {
+                pending.reject(msg);
+                // Log failed command response
+                setLogs((prev) => [
+                  ...prev.slice(-99),
+                  { id: Date.now().toString(), message: `Command failed: ${JSON.stringify(msg)}`, timestamp: Date.now(), type: "system" },
+                ]);
+              }
+              pendingRef.current.delete(msg.id);
+              return; // don't process further as normal event
+            }
+          }
           // If backend forwarded an error (for example Python backend not connected), show toast
           if (msg && (msg.error || msg.message && typeof msg.message === 'string' && msg.message.toLowerCase().includes('python'))) {
             if (msg.error) toast.error(msg.error)
@@ -197,21 +196,34 @@ export function useDroneData() {
     return () => window.removeEventListener('logs:clear', handler as EventListener)
   }, [])
 
-const sendCommand = async (command: string, payload?: any): Promise<void> => {
-  if (wsRef.current && wsRef.current.readyState === 1) {
-    const msg: any = { type: command };
-    if (payload !== undefined) msg.payload = payload;
-    wsRef.current.send(JSON.stringify(msg));
+  const sendCommand = async (command: string, payload?: any): Promise<void> => {
+    if (wsRef.current && wsRef.current.readyState === 1) {
+      const id = Date.now().toString() + Math.random().toString(36).slice(2, 8)
+      const msg: any = { type: command, id };
+      if (payload !== undefined) msg.payload = payload;
 
-    setLogs((prev) => [
-      ...prev.slice(-99),
-      { id: Date.now().toString(), message: `Command sent: ${command}`, timestamp: Date.now(), type: "command" },
-    ]);
-    toast.success(`Command sent: ${command}`);
-  } else {
-    toast.error("WebSocket not connected");
-  }
-};
+      // Send and create a pending promise that will resolve when backend responds with same id
+      const promise = new Promise<void>((resolve, reject) => {
+        pendingRef.current.set(id, { resolve, reject })
+        try {
+          wsRef.current?.send(JSON.stringify(msg))
+        } catch (e) {
+          pendingRef.current.delete(id)
+          reject(e)
+        }
+      })
+
+      setLogs((prev) => [
+        ...prev.slice(-99),
+        { id: Date.now().toString(), message: `Command sent: ${command}`, timestamp: Date.now(), type: "command" },
+      ]);
+
+      return promise
+    } else {
+      toast.error("WebSocket not connected");
+      return Promise.reject(new Error('WebSocket not connected'))
+    }
+  };
 
 
   // For unimplemented features (ARM, DISARM, etc.)

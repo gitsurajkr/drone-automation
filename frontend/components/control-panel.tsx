@@ -30,22 +30,53 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
     }
   }, [droneData])
 
- const handleCommandAsync = async (command: string, payload?: any) => {
-  setConnProcessing(true)
-  try {
-    await onCommand(command, payload)
+  const handleCommandAsync = async (command: string, payload?: any) => {
+    setConnProcessing(true)
+    try {
+      await onCommand(command, payload)
 
-    if (command === "connect" && setPythonConnected) setPythonConnected(true)
-    if (command === "disconnect" && setPythonConnected) setPythonConnected(false)
+      // Success toast messages
+      if (command === "connect") {
+        toast.success("🟢 Drone connected successfully!")
+        if (setPythonConnected) setPythonConnected(true)
+      } else if (command === "disconnect") {
+        toast.success("🔴 Drone disconnected safely")
+        if (setPythonConnected) setPythonConnected(false)
+      } else if (command === "arm") {
+        toast.success("⚠️ Drone ARMED - Ready for flight")
+        setLocalArmed(true)
+      } else if (command === "disarm") {
+        toast.success("✅ Drone DISARMED - Safe state")
+        setLocalArmed(false)
+      } else if (command === "emergency_disarm") {
+        toast.success("🚨 EMERGENCY DISARM successful")
+        setLocalArmed(false)
+      } else {
+        toast.success(`Command "${command}" executed successfully`)
+      }
 
-    if (command === "arm") setLocalArmed(true)
-    if (command === "disarm") setLocalArmed(false)
-  } catch (e) {
-    toast.error(`Failed to execute ${command}`)
-  } finally {
-    setConnProcessing(false)
+    } catch (e) {
+      const err: any = e
+      const errorMsg = err?.detail ?? err?.message ?? String(err)
+
+      // Error toast messages
+      if (command === "connect") {
+        toast.error(`❌ Failed to connect: ${errorMsg}`)
+      } else if (command === "disconnect") {
+        toast.error(`❌ Failed to disconnect: ${errorMsg}`)
+      } else if (command === "arm") {
+        toast.error(`⚠️ Failed to ARM drone: ${errorMsg}`)
+      } else if (command === "disarm") {
+        toast.error(`❌ Failed to DISARM drone: ${errorMsg}`)
+      } else if (command === "emergency_disarm") {
+        toast.error(`🚨 EMERGENCY DISARM FAILED: ${errorMsg}`)
+      } else {
+        toast.error(`Failed to execute ${command}: ${errorMsg}`)
+      }
+    } finally {
+      setConnProcessing(false)
+    }
   }
-}
 
 
   const handleToggleArm = () => {
@@ -74,21 +105,44 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
       </CardHeader>
 
       <CardContent className="space-y-4">
+        {/* Connection Controls */}
         <div className="flex gap-2 items-center">
           <Button
-  onClick={() => handleCommandAsync(pythonConnected ? "disconnect" : "connect")}
-  disabled={connProcessing || pythonConnected === null}
->
-  {connProcessing ? (pythonConnected ? "Disconnecting..." : "Connecting...") : pythonConnected ? "Disconnect" : "Connect"}
-</Button>
+            onClick={() => handleCommandAsync(pythonConnected ? "disconnect" : "connect")}
+            disabled={connProcessing || pythonConnected === null}
+            variant={pythonConnected ? "destructive" : "default"}
+          >
+            {connProcessing ? (pythonConnected ? "Disconnecting..." : "Connecting...") : pythonConnected ? "Disconnect" : "Connect"}
+          </Button>
 
-<Button
-  onClick={handleToggleArm}
-  disabled={connProcessing || pythonConnected !== true}
->
-  {localArmed ? "DISARM" : "ARM"}
-</Button>
+          <Button
+            onClick={() => handleCommandAsync("status")}
+            disabled={connProcessing || pythonConnected !== true}
+            variant="outline"
+            size="sm"
+          >
+            Status
+          </Button>
+        </div>
 
+        {/* Arm/Disarm Controls */}
+        <div className="flex gap-2 items-center">
+          <Button
+            onClick={handleToggleArm}
+            disabled={connProcessing || pythonConnected !== true}
+            variant={localArmed ? "destructive" : "default"}
+          >
+            {localArmed ? "DISARM" : "ARM"}
+          </Button>
+
+          <Button
+            onClick={() => handleCommandAsync("emergency_disarm")}
+            disabled={connProcessing || pythonConnected !== true || !localArmed}
+            variant="destructive"
+            size="sm"
+          >
+            🚨 EMERGENCY DISARM
+          </Button>
         </div>
 
         {/* Throttle */}
@@ -115,10 +169,29 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
           <Button variant="outline" size="sm" onClick={() => handleCommandAsync("rotate_right")}><RotateCw className="h-4 w-4" /></Button>
         </div>
 
-        {/* Emergency / RTL */}
+        {/* Flight Controls */}
         <div className="flex gap-2">
-          <Button variant="destructive" onClick={() => handleCommandAsync("emergency_stop")}>EMERGENCY STOP</Button>
-          <Button onClick={() => handleCommandAsync("rtl")}>Return Home</Button>
+          <Button
+            variant="default"
+            onClick={() => handleCommandAsync("takeoff")}
+            disabled={connProcessing || pythonConnected !== true || !localArmed}
+          >
+            🚁 Takeoff
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => handleCommandAsync("land")}
+            disabled={connProcessing || pythonConnected !== true || !localArmed}
+          >
+            🛬 Land
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => handleCommandAsync("rtl")}
+            disabled={connProcessing || pythonConnected !== true || !localArmed}
+          >
+            🏠 Return Home
+          </Button>
         </div>
 
         {/* Flight info */}

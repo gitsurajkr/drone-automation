@@ -4,8 +4,15 @@ import { useEffect, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { MapPin, Pencil, Play, RotateCcw } from "lucide-react"
+import { MapPin, Pencil, Play, RotateCcw, Maximize2, Minimize2, Target } from "lucide-react"
 import type { DroneData } from "@/hooks/use-drone-data"
+
+declare global {
+    interface Window {
+        google: any
+        __googleMapsScriptLoading?: boolean
+    }
+}
 
 interface InteractiveMapProps {
     droneData: DroneData | null
@@ -19,243 +26,232 @@ interface DrawnWaypoint {
     altitude: number
 }
 
+// Default center (Delhi, India)
+const DEFAULT_CENTER = { lat: 28.5245, lng: 77.5770 }
+
+
+function loadGoogleMaps(apiKey: string | undefined): Promise<void> {
+    return new Promise((resolve, reject) => {
+        if (!apiKey) {
+            reject(new Error("Missing Google Maps API key (set NEXT_PUBLIC_GOOGLE_MAPS_API_KEY)."))
+            return
+        }
+
+        if (window.google && window.google.maps) {
+            resolve()
+            return
+        }
+
+        if (window.__googleMapsScriptLoading) {
+            const check = setInterval(() => {
+                if (window.google && window.google.maps) {
+                    clearInterval(check)
+                    resolve()
+                }
+            }, 100)
+            return
+        }
+
+        window.__googleMapsScriptLoading = true
+        const script = document.createElement("script")
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}`
+        script.async = true
+        script.defer = true
+        script.onload = () => resolve()
+        script.onerror = (err) => reject(err)
+        document.head.appendChild(script)
+    })
+}
+
 export function InteractiveMap({ droneData, onCommand, isConnected }: InteractiveMapProps) {
     const mapRef = useRef<HTMLDivElement>(null)
-    const [map, setMap] = useState<any>(null)
-    const [droneMarker, setDroneMarker] = useState<any>(null)
-    const [pathLayer, setPathLayer] = useState<any>(null)
+    const mapInstanceRef = useRef<any>(null)
+    const droneMarkerRef = useRef<any>(null)
     const [drawnPath, setDrawnPath] = useState<DrawnWaypoint[]>([])
     const [isDrawing, setIsDrawing] = useState(false)
-    const [drawingPath, setDrawingPath] = useState<any>(null)
+    const [isFullscreen, setIsFullscreen] = useState(false)
+    const polylineRef = useRef<any>(null)
+    const waypointMarkersRef = useRef<any[]>([])
+    const mapClickListenerRef = useRef<any>(null)
+    const [mapsLoadedError, setMapsLoadedError] = useState<string | null>(null)
 
-    // Initialize Leaflet map on mount (don't wait for telemetry)
+    // Initialize Google Maps
     useEffect(() => {
-        if (!mapRef.current || map) return
+        const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
 
-        // Default center: Galgotias University, Noida, Uttar Pradesh, India
-        const DEFAULT_CENTER: [number, number] = [28.5452, 77.5036]
+        let mounted = true
 
-        // Dynamically import Leaflet to avoid SSR issues
-        const initMap = async () => {
-            const L = (await import("leaflet")).default
+        loadGoogleMaps(apiKey)
+            .then(() => {
+                if (!mounted) return
+                if (!mapRef.current) return
 
-            // Fix for default markers
-            delete (L.Icon.Default.prototype as any)._getIconUrl
-            L.Icon.Default.mergeOptions({
-                iconRetinaUrl: "/map-marker-icon.png",
-                iconUrl: "/map-marker-icon.png",
-                shadowUrl: "/shadow.jpg",
-            })
+                // Use GPS coordinates if available and valid, otherwise use default center
+                const hasValidGps = droneData?.gps &&
+                    Math.abs(droneData.gps.latitude || 0) > 0.0001 &&
+                    Math.abs(droneData.gps.longitude || 0) > 0.0001 &&
+                    droneData.gps.latitude !== null &&
+                    droneData.gps.longitude !== null
 
-            if (mapRef.current && (mapRef.current as any)._leaflet_id) {
-                // @ts-ignore
-                ; (mapRef.current as any)._leaflet_id = null
-            }
+                const center = hasValidGps
+                    ? { lat: droneData.gps.latitude, lng: droneData.gps.longitude }
+                    : DEFAULT_CENTER
 
-            const mapInstance = L.map(mapRef.current!, {
-                center: DEFAULT_CENTER,
-                zoom: 15,
-                zoomControl: true,
-                attributionControl: false,
-            })
+                const map = new window.google.maps.Map(mapRef.current, {
+                    center,
+                    zoom: 15,
+                    mapTypeId: window.google.maps.MapTypeId.HYBRID,
 
-            // Add tile layer (OpenStreetMap)
-            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-                maxZoom: 19,
-            }).addTo(mapInstance)
+                    // Enable zoom controls
+                    zoomControl: true,
+                    zoomControlOptions: {
+                        position: window.google.maps.ControlPosition.RIGHT_CENTER
+                    },
 
-            // University marker (Galgotias University)
-            const uniMarker = L.marker(DEFAULT_CENTER, { title: "Galgotias University" }).addTo(mapInstance)
-            uniMarker.bindPopup("Galgotias University, Noida, Uttar Pradesh, India")
+                    // Enable scroll wheel zoom
+                    scrollwheel: true,
 
-            // Initial drone marker (will be updated when telemetry arrives)
-            const droneIcon = L.divIcon({
-                className: "drone-marker",
-                html: `<div style="
-                    width: 32px; 
-                    height: 32px; 
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    transform: rotate(0deg);
-                ">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <g filter="url(#shadow)">
-              <ellipse cx="12" cy="12" rx="3" ry="1.5" fill="${isConnected ? "#10b981" : "#6b7280"}" stroke="white" strokeWidth="0.5"/>
-              <line x1="6" y1="8" x2="18" y2="16" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1.5" strokeLinecap="round"/>
-              <line x1="18" y1="8" x2="6" y2="16" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1.5" strokeLinecap="round"/>
-              <circle cx="6" cy="8" r="2" fill="none" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1" opacity="0.7"/>
-              <circle cx="18" cy="8" r="2" fill="none" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1" opacity="0.7"/>
-              <circle cx="18" cy="16" r="2" fill="none" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1" opacity="0.7"/>
-              <circle cx="6" cy="16" r="2" fill="none" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1" opacity="0.7"/>
-              <polygon points="12,9 13.5,11 10.5,11" fill="${isConnected ? "#ef4444" : "#9ca3af"}" stroke="white" strokeWidth="0.3"/>
-            </g>
-            <defs>
-              <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-                <feDropShadow dx="0" dy="1" stdDeviation="1" floodColor="black" floodOpacity="0.3"/>
-              </filter>
-            </defs>
-          </svg>
-        </div>`,
-                iconSize: [32, 32],
-                iconAnchor: [16, 16],
-            })
+                    // Enable gesture handling
+                    gestureHandling: 'cooperative',
 
-            const marker = L.marker(DEFAULT_CENTER, {
-                icon: droneIcon,
-            }).addTo(mapInstance)
-
-            setMap(mapInstance)
-            setDroneMarker(marker)
-
-            // Add click handler for drawing waypoints
-            mapInstance.on("click", (e: any) => {
-                if (isDrawing) {
-                    const newWaypoint: DrawnWaypoint = {
-                        lat: e.latlng.lat,
-                        lng: e.latlng.lng,
-                        altitude: 50, // Default altitude
+                    // Other controls
+                    mapTypeControl: true,
+                    mapTypeControlOptions: {
+                        style: window.google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
+                        position: window.google.maps.ControlPosition.TOP_RIGHT,
+                        mapTypeIds: [
+                            window.google.maps.MapTypeId.ROADMAP,
+                            window.google.maps.MapTypeId.SATELLITE,
+                            window.google.maps.MapTypeId.HYBRID,
+                            window.google.maps.MapTypeId.TERRAIN
+                        ]
+                    },
+                    streetViewControl: false,
+                    fullscreenControl: true,
+                    fullscreenControlOptions: {
+                        position: window.google.maps.ControlPosition.TOP_RIGHT
                     }
-
-                    setDrawnPath((prev) => {
-                        const updated = [...prev, newWaypoint]
-                        updateDrawnPath(mapInstance, updated, L)
-                        return updated
-                    })
-                }
-            })
-
-            // No telemetry yet: keep uni marker visible. When telemetry arrives the update effect
-            // will move the drone marker and recenter the map as needed.
-        }
-
-        initMap()
-
-        return () => {
-            // remove the map instance we created
-            // (use the internal leaflet instance if available)
-            if (map) {
-                map.remove()
-                setMap(null)
-            }
-        }
-    }, [])
-
-    // Update drone position: only recenter when GPS looks valid. Start at DEFAULT_CENTER (uni)
-    useEffect(() => {
-        if (!droneMarker || !map || !droneData?.orientation) return
-        const L = require("leaflet")
-
-        const droneIcon = L.divIcon({
-            className: "drone-marker",
-            html: `<div style="
-                    width: 32px; 
-                    height: 32px; 
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    transform: rotate(${droneData.orientation.heading}deg);
-                ">
-                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <g filter="url(#shadow)">
-                            <!-- Drone body -->
-                            <ellipse cx="12" cy="12" rx="3" ry="1.5" fill="${isConnected ? "#10b981" : "#6b7280"}" stroke="white" strokeWidth="0.5"/>
-              
-                            <!-- Propeller arms -->
-                            <line x1="6" y1="8" x2="18" y2="16" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1.5" strokeLinecap="round"/>
-                            <line x1="18" y1="8" x2="6" y2="16" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1.5" strokeLinecap="round"/>
-              
-                            <!-- Propellers -->
-                            <circle cx="6" cy="8" r="2" fill="none" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1" opacity="0.7"/>
-                            <circle cx="18" cy="8" r="2" fill="none" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1" opacity="0.7"/>
-                            <circle cx="18" cy="16" r="2" fill="none" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1" opacity="0.7"/>
-                            <circle cx="6" cy="16" r="2" fill="none" stroke="${isConnected ? "#10b981" : "#6b7280"}" strokeWidth="1" opacity="0.7"/>
-              
-                            <!-- Direction indicator -->
-                            <polygon points="12,9 13.5,11 10.5,11" fill="${isConnected ? "#ef4444" : "#9ca3af"}" stroke="white" strokeWidth="0.3"/>
-                        </g>
-                        <defs>
-                            <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-                                <feDropShadow dx="0" dy="1" stdDeviation="1" floodColor="black" floodOpacity="0.3"/>
-                            </filter>
-                        </defs>
-                    </svg>
-                </div>`,
-            iconSize: [32, 32],
-            iconAnchor: [16, 16],
-        })
-
-        const lat = droneData?.gps?.latitude ?? 0
-        const lon = droneData?.gps?.longitude ?? 0
-        const sats = droneData?.satellites ?? 0
-
-        // Consider GPS valid when satellites >= 4 OR lat/lon are non-zero (tolerance)
-        const hasValidGps = sats >= 4 || (Math.abs(lat) > 0.0001 && Math.abs(lon) > 0.0001)
-
-        // Always update the icon (color/rotation)
-        droneMarker.setIcon(droneIcon)
-
-        if (hasValidGps) {
-            droneMarker.setLatLng([lat, lon])
-            if (!pathLayer) {
-                map.setView([lat, lon], 15)
-            }
-        } else {
-            // GPS not valid yet: keep marker at fallback (DEFAULT_CENTER from init)
-            // Optionally we could show a subtle pulse or popup to indicate no GPS.
-        }
-    }, [droneData?.gps?.latitude, droneData?.gps?.longitude, droneData?.orientation?.heading, droneData?.satellites, isConnected, droneMarker, map])
-
-    const updateDrawnPath = (mapInstance: any, waypoints: DrawnWaypoint[], L: any) => {
-        if (drawingPath) {
-            mapInstance.removeLayer(drawingPath)
-        }
-
-        if (waypoints.length > 1) {
-            const latlngs = waypoints.map((wp) => [wp.lat, wp.lng])
-            const polyline = L.polyline(latlngs, {
-                color: "#10b981",
-                weight: 3,
-                opacity: 0.8,
-                dashArray: "10, 5",
-            }).addTo(mapInstance)
-
-            // Add waypoint markers
-            waypoints.forEach((wp, index) => {
-                const waypointIcon = L.divIcon({
-                    className: "waypoint-marker",
-                    html: `<div style="
-            width: 24px; 
-            height: 24px; 
-            background: #10b981; 
-            border: 2px solid white; 
-            border-radius: 50%; 
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            font-weight: bold;
-            color: white;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-          ">${index + 1}</div>`,
-                    iconSize: [24, 24],
-                    iconAnchor: [12, 12],
                 })
 
-                L.marker([wp.lat, wp.lng], { icon: waypointIcon }).addTo(mapInstance)
+                mapInstanceRef.current = map
+
+                // Create drone marker using the drone.png image
+                const droneIcon = {
+                    url: '/drone.png',
+                    scaledSize: new window.google.maps.Size(40, 40),
+                    anchor: new window.google.maps.Point(20, 20),
+                    optimized: false
+                }
+
+                const marker = new window.google.maps.Marker({
+                    map,
+                    position: center,
+                    icon: droneIcon,
+                    title: 'Drone Position',
+                    clickable: false,
+                    optimized: false,
+                })
+
+                droneMarkerRef.current = marker
+
+                // Map click handler for drawing mode
+                mapClickListenerRef.current = map.addListener("click", (e: any) => {
+                    if (!isDrawing) return
+                    const lat = e.latLng.lat()
+                    const lng = e.latLng.lng()
+                    const wp: DrawnWaypoint = { lat, lng, altitude: 0 }
+                    setDrawnPath((prev) => {
+                        const next = [...prev, wp]
+                        updatePathOnMap(next, map)
+                        return next
+                    })
+                })
+            })
+            .catch((err) => {
+                console.error("Failed to load Google Maps:", err)
+                setMapsLoadedError(String(err.message || err))
             })
 
-            setDrawingPath(polyline)
+        return () => {
+            mounted = false
+            if (mapClickListenerRef.current) {
+                window.google && window.google.maps.event.removeListener(mapClickListenerRef.current)
+                mapClickListenerRef.current = null
+            }
+            if (droneMarkerRef.current) {
+                try {
+                    droneMarkerRef.current.setMap && droneMarkerRef.current.setMap(null)
+                } catch { }
+                droneMarkerRef.current = null
+            }
+            if (polylineRef.current) {
+                polylineRef.current.setMap(null)
+                polylineRef.current = null
+            }
+            waypointMarkersRef.current.forEach((m) => m.setMap && m.setMap(null))
+            waypointMarkersRef.current = []
+            mapInstanceRef.current = null
+        }
+        // We intentionally do not include isDrawing/droneData in deps here for controlled updates below
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
+    // Helper to update drawn path polyline + waypoint markers
+    const updatePathOnMap = (waypoints: DrawnWaypoint[], map: any) => {
+        // clear previous
+        if (polylineRef.current) {
+            polylineRef.current.setMap(null)
+            polylineRef.current = null
+        }
+        waypointMarkersRef.current.forEach((m) => m.setMap && m.setMap(null))
+        waypointMarkersRef.current = []
+
+        if (waypoints.length > 0) {
+            const path = waypoints.map((w) => ({ lat: w.lat, lng: w.lng }))
+            polylineRef.current = new window.google.maps.Polyline({
+                path,
+                strokeColor: "#10b981",
+                strokeOpacity: 0.9,
+                strokeWeight: 3,
+                geodesic: true,
+                icons: [{ icon: { path: "M 0,-1 0,1", strokeOpacity: 0.0 }, offset: "0" }],
+            })
+            polylineRef.current.setMap(map)
+
+            // add numbered waypoint markers
+            waypoints.forEach((wp, idx) => {
+                const marker = new window.google.maps.Marker({
+                    position: { lat: wp.lat, lng: wp.lng },
+                    map,
+                    label: {
+                        text: String(idx + 1),
+                        color: "white",
+                        fontSize: "12px",
+                        fontWeight: "700",
+                    },
+                    icon: {
+                        path: window.google.maps.SymbolPath.CIRCLE,
+                        fillColor: "#10b981",
+                        fillOpacity: 1,
+                        strokeColor: "white",
+                        strokeWeight: 2,
+                        scale: 10,
+                    },
+                })
+                waypointMarkersRef.current.push(marker)
+            })
         }
     }
 
     const startDrawing = () => {
         setIsDrawing(true)
         setDrawnPath([])
-        if (drawingPath && map) {
-            map.removeLayer(drawingPath)
-            setDrawingPath(null)
+        if (polylineRef.current) {
+            polylineRef.current.setMap(null)
+            polylineRef.current = null
         }
+        waypointMarkersRef.current.forEach((m) => m.setMap && m.setMap(null))
+        waypointMarkersRef.current = []
     }
 
     const stopDrawing = () => {
@@ -265,21 +261,119 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
     const clearPath = () => {
         setDrawnPath([])
         setIsDrawing(false)
-        if (drawingPath && map) {
-            map.removeLayer(drawingPath)
-            setDrawingPath(null)
+        if (polylineRef.current) {
+            polylineRef.current.setMap(null)
+            polylineRef.current = null
         }
+        waypointMarkersRef.current.forEach((m) => m.setMap && m.setMap(null))
+        waypointMarkersRef.current = []
     }
 
     const startMission = () => {
         if (drawnPath.length > 0) {
             onCommand(`START_DRAWN_MISSION:${JSON.stringify(drawnPath)}`)
-            console.log("[v0] Starting mission with drawn path:", drawnPath)
+            console.log("[Sky Navigator] Starting mission with drawn path:", drawnPath)
         }
     }
 
+    const centerOnDrone = () => {
+        const map = mapInstanceRef.current
+        if (!map || !droneData?.gps) return
+
+        const lat = droneData.gps.latitude
+        const lng = droneData.gps.longitude
+
+        if (lat && lng && Math.abs(lat) > 0.0001 && Math.abs(lng) > 0.0001) {
+            map.panTo({ lat, lng })
+            map.setZoom(18) // Zoom in closer
+        }
+    }
+
+    // Update drone marker position & rotation when droneData changes
+    useEffect(() => {
+        const map = mapInstanceRef.current
+        const marker = droneMarkerRef.current
+        if (!map || !marker) return
+
+        const lat = droneData?.gps?.latitude ?? 0
+        const lng = droneData?.gps?.longitude ?? 0
+        const sats = droneData?.satellites ?? 0
+        const heading = droneData?.orientation?.heading ?? 0
+
+        // Check for valid GPS coordinates
+        const hasValidGps = sats >= 4 && Math.abs(lat) > 0.0001 && Math.abs(lng) > 0.0001
+
+        // Update drone icon with proper size based on connection status
+        const size = isConnected ? 40 : 30
+        const droneIcon = {
+            url: '/drone.png',
+            scaledSize: new window.google.maps.Size(size, size),
+            anchor: new window.google.maps.Point(size / 2, size / 2),
+            optimized: false
+        }
+
+        marker.setIcon(droneIcon)
+
+        // Update position and center map on valid GPS
+        if (hasValidGps) {
+            const newPosition = { lat, lng }
+            marker.setPosition(newPosition)
+
+            // Center map on drone if not in drawing mode and map hasn't been manually moved
+            if (!isDrawing) {
+                map.panTo(newPosition)
+            }
+        }
+
+        // Update marker visibility based on connection status
+        marker.setOpacity(isConnected ? 1.0 : 0.6)
+
+    }, [droneData?.gps?.latitude, droneData?.gps?.longitude, droneData?.orientation?.heading, droneData?.satellites, isConnected, isDrawing])
+
+    // When drawnPath state updates we must update the map polyline (map may not be ready yet)
+    useEffect(() => {
+        const map = mapInstanceRef.current
+        if (!map) return
+        updatePathOnMap(drawnPath, map)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [drawnPath])
+
+    // Handle map resize when toggling fullscreen
+    useEffect(() => {
+        const map = mapInstanceRef.current
+        if (!map) return
+
+        // Delay to ensure the DOM has updated
+        const timeout = setTimeout(() => {
+            window.google.maps.event.trigger(map, 'resize')
+
+            // Re-center on drone if we have valid GPS
+            if (droneData?.gps && Math.abs(droneData.gps.latitude) > 0.0001) {
+                map.panTo({
+                    lat: droneData.gps.latitude,
+                    lng: droneData.gps.longitude
+                })
+            }
+        }, 100)
+
+        return () => clearTimeout(timeout)
+    }, [isFullscreen, droneData?.gps?.latitude, droneData?.gps?.longitude])
+
+    // Lock body scroll when in fullscreen
+    useEffect(() => {
+        if (isFullscreen) {
+            document.body.style.overflow = 'hidden'
+        } else {
+            document.body.style.overflow = ''
+        }
+
+        return () => {
+            document.body.style.overflow = ''
+        }
+    }, [isFullscreen])
+
     return (
-        <Card className="h-full bg-card border-border pb-2">
+        <Card className="h-full bg-card border-border">
             <CardHeader>
                 <div className="flex items-center justify-between">
                     <CardTitle className="text-lg flex items-center gap-2">
@@ -287,31 +381,69 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                         Sky Navigator
                     </CardTitle>
                     <div className="flex items-center gap-2">
-                        <Badge variant={isConnected ? "default" : "destructive"}>{isConnected ? "Live" : "Offline"}</Badge>
+                        <Badge variant={isConnected ? "default" : "destructive"}>
+                            {isConnected ? "🟢 Live" : "🔴 Offline"}
+                        </Badge>
                         <Badge variant="outline">Waypoints: {drawnPath.length}</Badge>
+                        {droneData?.satellites && (
+                            <Badge variant={droneData.satellites >= 4 ? "default" : "destructive"}>
+                                GPS: {droneData.satellites}
+                            </Badge>
+                        )}
                     </div>
                 </div>
             </CardHeader>
             <CardContent className="h-[calc(100%-80px)] space-y-4">
                 {/* Map Controls */}
-                <div className="flex gap-2 flex-wrap">
+                <div className="flex gap-2 flex-wrap items-center justify-between">
+                    <div className="flex gap-2 flex-wrap">
+                        <Button
+                            variant={isDrawing ? "destructive" : "default"}
+                            size="sm"
+                            onClick={isDrawing ? stopDrawing : startDrawing}
+                            disabled={!isConnected}
+                        >
+                            <Pencil className="h-4 w-4 mr-2" />
+                            {isDrawing ? "Stop Drawing" : "Draw Path"}
+                        </Button>
+
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={clearPath}
+                            disabled={drawnPath.length === 0}
+                        >
+                            <RotateCcw className="h-4 w-4 mr-2" />
+                            Clear Path
+                        </Button>
+
+                        <Button
+                            variant="default"
+                            size="sm"
+                            onClick={startMission}
+                            disabled={drawnPath.length === 0 || !isConnected}
+                        >
+                            <Play className="h-4 w-4 mr-2" />
+                            Start Mission
+                        </Button>
+
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={centerOnDrone}
+                            disabled={!droneData?.gps || Math.abs(droneData.gps.latitude || 0) < 0.0001}
+                        >
+                            <Target className="h-4 w-4 mr-2" />
+                            Center on Drone
+                        </Button>
+                    </div>
+
                     <Button
-                        variant={isDrawing ? "destructive" : "default"}
+                        variant="outline"
                         size="sm"
-                        onClick={isDrawing ? stopDrawing : startDrawing}
+                        onClick={() => setIsFullscreen(!isFullscreen)}
                     >
-                        <Pencil className="h-4 w-4 mr-2" />
-                        {isDrawing ? "Stop Drawing" : "Draw Path"}
-                    </Button>
-
-                    <Button variant="outline" size="sm" onClick={clearPath} disabled={drawnPath.length === 0}>
-                        <RotateCcw className="h-4 w-4 mr-2" />
-                        Clear Path
-                    </Button>
-
-                    <Button variant="default" size="sm" onClick={startMission} disabled={drawnPath.length === 0}>
-                        <Play className="h-4 w-4 mr-2" />
-                        Start Mission
+                        {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                     </Button>
                 </div>
 
@@ -325,31 +457,73 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                 )}
 
                 {/* Map Container */}
-                <div className="relative bg-black rounded-lg overflow-hidden h-full min-h-[400px]">
-                    {/* Map Overlay Info */}
-                    <div className="absolute top-20 left-4 z-10 bg-black/80 text-white px-3 py-2 rounded text-sm font-mono">
-                        <div className="flex items-center gap-2 mb-1">
-                            <div className={`w-2 h-2 rounded-full ${isConnected ? "bg-green-500" : "bg-red-500"}`}></div>
-                            {isConnected ? "Live Tracking" : "Disconnected"}
+                <div className={`relative bg-black rounded-lg overflow-hidden transition-all duration-300 ${isFullscreen
+                        ? 'fixed inset-0 z-50 rounded-none'
+                        : 'h-full min-h-[400px]'
+                    }`}>
+
+                    {/* Map Overlay Info - Left Side */}
+                    <div className="absolute top-4 left-4 z-10 bg-black/80 backdrop-blur-sm text-white px-3 py-2 rounded-lg text-sm font-mono shadow-lg border border-white/10">
+                        <div className="flex items-center gap-2 mb-2">
+                            <div className={`w-3 h-3 rounded-full ${isConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`}></div>
+                            <span className="font-semibold">{isConnected ? "Live Tracking" : "Disconnected"}</span>
                         </div>
-                        <div>Alt: {(droneData?.altitude ?? 0).toFixed(1)}m</div>
-                        <div>Speed: {(droneData?.velocity.avgspeed ?? 0).toFixed(1)}m/s</div>
+                        <div className="space-y-1">
+                            <div>Alt: <span className="text-green-400">{(droneData?.altitude ?? 0).toFixed(1)}m</span></div>
+                            <div>Speed: <span className="text-blue-400">{(droneData?.velocity?.avgspeed ?? 0).toFixed(1)}m/s</span></div>
+                            <div>Sats: <span className="text-yellow-400">{droneData?.satellites ?? 0}</span></div>
+                        </div>
                     </div>
 
-                    <div className="absolute top-4 right-4 z-10 bg-black/80 text-white px-3 py-2 rounded text-sm font-mono">
-                        <div>Lat: {(droneData?.gps?.latitude ?? 0).toFixed(6)}</div>
-                        <div>Lng: {(droneData?.gps?.longitude ?? 0).toFixed(6)}</div>
-                        <div>Heading: {(droneData?.orientation?.heading ?? 0).toFixed(1)}°</div>
+                    {/* GPS Coordinates - Right Side */}
+                    <div className="absolute top-4 right-4 z-10 bg-black/80 backdrop-blur-sm text-white px-3 py-2 rounded-lg text-sm font-mono shadow-lg border border-white/10">
+                        <div className="space-y-1">
+                            <div>Lat: <span className="text-green-400">{(droneData?.gps?.latitude ?? 0).toFixed(6)}</span></div>
+                            <div>Lng: <span className="text-green-400">{(droneData?.gps?.longitude ?? 0).toFixed(6)}</span></div>
+                            <div>Heading: <span className="text-orange-400">{(droneData?.orientation?.heading ?? 0).toFixed(1)}°</span></div>
+                        </div>
                     </div>
 
                     {/* Drawing Mode Indicator */}
                     {isDrawing && (
-                        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10 bg-green-500/90 text-white px-4 py-2 rounded-full text-sm font-medium">
-                            Drawing Mode Active - Click to add waypoints
+                        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10 bg-green-500/90 backdrop-blur-sm text-white px-4 py-2 rounded-full text-sm font-medium shadow-lg animate-pulse">
+                            🎯 Drawing Mode Active - Click to add waypoints
                         </div>
                     )}
 
-                    <div ref={mapRef} className="w-full h-full z-0" />
+                    {/* Connection Status Banner */}
+                    {!isConnected && (
+                        <div className="absolute top-16 left-1/2 transform -translate-x-1/2 z-10 bg-red-500/90 backdrop-blur-sm text-white px-4 py-2 rounded-lg text-sm font-medium shadow-lg">
+                            ⚠️ Drone Disconnected - Map showing last known position
+                        </div>
+                    )}
+
+                    {/* Fullscreen Exit Button */}
+                    {isFullscreen && (
+                        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-10">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setIsFullscreen(false)}
+                                className="bg-black/80 backdrop-blur-sm border-white/20 text-white hover:bg-white/20"
+                            >
+                                <Minimize2 className="h-4 w-4 mr-2" />
+                                Exit Fullscreen
+                            </Button>
+                        </div>
+                    )}
+
+                    {mapsLoadedError ? (
+                        <div className="w-full h-full flex items-center justify-center text-white p-6">
+                            <div className="max-w-md text-center bg-red-900/50 p-6 rounded-lg border border-red-500/30">
+                                <p className="font-semibold text-red-300 mb-2">🗺️ Google Maps Failed to Load</p>
+                                <p className="text-sm text-red-200 mb-2">{mapsLoadedError}</p>
+                                <p className="text-xs text-red-300">Set NEXT_PUBLIC_GOOGLE_MAPS_API_KEY in your environment to enable Google Maps.</p>
+                            </div>
+                        </div>
+                    ) : (
+                        <div ref={mapRef} className="w-full h-full z-0" />
+                    )}
                 </div>
             </CardContent>
         </Card>
