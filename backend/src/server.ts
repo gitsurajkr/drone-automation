@@ -42,8 +42,10 @@ wss.on('connection', (ws) => {
             const enhancedCommands = [
                 'connect', 'disconnect', 'reconnect', 'status',
                 'arm', 'disarm', 'emergency_disarm',
-                'takeoff', 'land', 'rtl',
-                'fly_timed', 'mission_status', 'sitl_setup'
+                'takeoff', 'land', 'rtl', 'arm_and_takeoff',
+                'fly_timed', 'mission_status', 'sitl_setup',
+                'set_throttle', 'release_throttle',
+                'emergency_land', 'verify_home', 'force_land_here'
             ];
 
             if (enhancedCommands.includes(cmd)) {
