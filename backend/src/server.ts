@@ -1,11 +1,10 @@
 import WebSocket, { WebSocketServer } from 'ws';
-
+import http from 'http'
 const PYTHON_WS_URL = 'ws://localhost:8765';
 const NODE_WS_PORT = 4000;
 
 const wss = new WebSocketServer({ port: NODE_WS_PORT });
 const clients = new Set<WebSocket>();
-// Map of pending command IDs -> originating frontend WebSocket
 const pendingRequests: Map<string, WebSocket> = new Map();
 
 wss.on('connection', (ws) => {
@@ -37,7 +36,6 @@ wss.on('connection', (ws) => {
                 }
             }
         } catch (e) {
-            // Fall back to legacy text command handling
             const cmd = raw.toLowerCase();
             if (['connect', 'disconnect', 'reconnect', 'status', 'arm', 'disarm'].includes(cmd)) {
                 if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
@@ -70,8 +68,6 @@ console.log(`Node.js WS server listening on ws://localhost:${NODE_WS_PORT}`);
 let pythonWs: WebSocket | null = null;
 let pythonConnected = false;
 
-import http from 'http'
-
 const HEALTH_PORT = 4001
 const healthServer = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
@@ -101,7 +97,7 @@ function connectPythonWS() {
         const msg = data.toString();
         console.log('Python WS says:', msg);
 
-        // Try to parse and route responses back to the originating client when an id is present.
+        // Attempt to parse the message and, if it contains an id, send the response back to the client that made the request.
         try {
             const parsed = JSON.parse(msg);
             const respId = parsed && parsed.id;

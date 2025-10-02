@@ -15,8 +15,8 @@ import { useState, useEffect } from "react"
 export default function DroneDashboard() {
   const { droneData, alerts, logs, isConnected, telemetryHistory, sendCommand } = useDroneData()
   const [currentView, setCurrentView] = useState<"dashboard" | "map">("dashboard")
-  const [pythonConnected, setPythonConnected] = useState<boolean>(false) // WebSocket connection to Python
-  const [droneConnected, setDroneConnected] = useState<boolean>(false) // Actual drone connection
+  const [pythonConnected, setPythonConnected] = useState<boolean>(false)
+  const [droneConnected, setDroneConnected] = useState<boolean>(false)
   const [backendHealthy, setBackendHealthy] = useState<boolean>(false)
 
   // Poll backend for health every 3s

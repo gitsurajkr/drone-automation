@@ -41,7 +41,7 @@ export function LogsPanel({ logs }: LogsPanelProps) {
     const filteredLogs = logs
         .filter((log) => filterType === "all" || log.type === filterType)
         .filter((log) => log.message.toLowerCase().includes(searchTerm.toLowerCase()))
-        .slice(-50) // Show last 50 logs
+        .slice(-50) 
 
     return (
         <Card className="bg-card border-border">

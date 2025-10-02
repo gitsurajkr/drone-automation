@@ -108,7 +108,6 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                         position: window.google.maps.ControlPosition.RIGHT_CENTER
                     },
 
-                    // Enable scroll wheel zoom
                     scrollwheel: true,
 
                     // Enable gesture handling
@@ -335,19 +334,15 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         const map = mapInstanceRef.current
         if (!map) return
         updatePathOnMap(drawnPath, map)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [drawnPath])
 
-    // Handle map resize when toggling fullscreen
     useEffect(() => {
         const map = mapInstanceRef.current
         if (!map) return
 
-        // Delay to ensure the DOM has updated
         const timeout = setTimeout(() => {
             window.google.maps.event.trigger(map, 'resize')
 
-            // Re-center on drone if we have valid GPS
             if (droneData?.gps && Math.abs(droneData.gps.latitude) > 0.0001) {
                 map.panTo({
                     lat: droneData.gps.latitude,
@@ -359,7 +354,6 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         return () => clearTimeout(timeout)
     }, [isFullscreen, droneData?.gps?.latitude, droneData?.gps?.longitude])
 
-    // Lock body scroll when in fullscreen
     useEffect(() => {
         if (isFullscreen) {
             document.body.style.overflow = 'hidden'

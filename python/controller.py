@@ -5,6 +5,7 @@ from dronekit import VehicleMode
 class Controller:
     def __init__(self, connection):
         self.connection = connection
+        self.is_sitl = False  # Track if this is a SITL connection
 
     def _vehicle_ready(self, require_armable=True):
         
@@ -59,6 +60,35 @@ class Controller:
 
         return True
 
+    async def setup_sitl_connection(self):
+        """Setup SITL-specific configuration after connection."""
+        if not self._vehicle_ready(require_armable=False):
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        try:
+            print("Configuring SITL vehicle...")
+            
+            # Disable arming checks for SITL
+            print("Disabling arming checks (ARMING_CHECK=0)...")
+            vehicle.parameters['ARMING_CHECK'] = 0
+            
+            # Wait for parameter to be set
+            await asyncio.sleep(2)
+            
+            # Verify parameter was set
+            arming_check = vehicle.parameters.get('ARMING_CHECK', -1)
+            print(f"ARMING_CHECK parameter set to: {arming_check}")
+            
+            self.is_sitl = True
+            print("SITL setup complete.")
+            return True
+            
+        except Exception as e:
+            print(f"SITL setup failed: {e}")
+            return False
+
     async def _wait_for_condition(self, check_fn, timeout, interval=0.5, desc="condition"):
         start = time.time()
         while not check_fn():
@@ -68,25 +98,40 @@ class Controller:
             await asyncio.sleep(interval)
         return True
 
-    async def arm(self, *, wait_mode_timeout=5.0, wait_arm_timeout=15.0):
+    async def arm(self, *, wait_mode_timeout=10.0, wait_arm_timeout=20.0):
         if not self._vehicle_ready(require_armable=True):
             return False
 
         vehicle = self.connection.vehicle
 
         try:
-            print("Setting mode to GUIDED...")
-            vehicle.mode = VehicleMode("GUIDED")
-            if not await self._wait_for_condition(lambda: getattr(vehicle.mode, "name", None) == "GUIDED", wait_mode_timeout, desc="GUIDED mode"):
-                return False
+            # Ensure vehicle is in GUIDED mode before arming
+            current_mode = getattr(vehicle.mode, "name", "UNKNOWN")
+            if current_mode != "GUIDED":
+                print(f"Current mode: {current_mode}. Setting mode to GUIDED...")
+                vehicle.mode = VehicleMode("GUIDED")
+                if not await self._wait_for_condition(lambda: getattr(vehicle.mode, "name", None) == "GUIDED", wait_mode_timeout, desc="GUIDED mode"):
+                    print("Failed to set GUIDED mode.")
+                    return False
+                print("Vehicle is now in GUIDED mode.")
+            else:
+                print("Vehicle already in GUIDED mode.")
+
+            # Check if already armed
+            if getattr(vehicle, "armed", False):
+                print("Vehicle is already armed.")
+                return True
 
             print("Arming vehicle...")
             vehicle.armed = True
+            
+            # Wait until the vehicle confirms it is armed
             if not await self._wait_for_condition(lambda: getattr(vehicle, "armed", False),
-                                                  wait_arm_timeout, desc="arming"):
+                                                  wait_arm_timeout, desc="arming confirmation"):
+                print("Arming failed - vehicle did not confirm armed state.")
                 return False
 
-            print("Vehicle is armed.")
+            print("✅ Vehicle is armed and ready.")
             return True
         except Exception as e:
             print(f"Arming failed: {e}")
@@ -136,4 +181,55 @@ class Controller:
             return True
         except Exception as e:
             print(f"Emergency disarm failed: {e}")
+            return False
+
+    async def takeoff(self, altitude, *, wait_timeout=30.0):
+        """Safely take off to specified altitude.
+        
+        Args:
+            altitude: Target altitude in meters (relative to home)
+            wait_timeout: Maximum time to wait for takeoff completion
+            
+        Returns:
+            bool: True if takeoff successful, False otherwise
+        """
+        if not self._vehicle_ready(require_armable=False):
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        # Check if vehicle is armed
+        if not getattr(vehicle, "armed", False):
+            print("Vehicle must be armed before takeoff. Call arm() first.")
+            return False
+            
+        # Check if vehicle is in GUIDED mode
+        if getattr(vehicle.mode, "name", None) != "GUIDED":
+            print("Vehicle must be in GUIDED mode for takeoff.")
+            return False
+            
+        try:
+            print(f"Taking off to {altitude}m altitude...")
+            
+            # Command takeoff
+            vehicle.simple_takeoff(altitude)
+            
+            # Wait until vehicle reaches target altitude (within 95% of target)
+            target_reached = lambda: (
+                getattr(vehicle.location, "global_relative_frame", None) and
+                getattr(vehicle.location.global_relative_frame, "alt", 0) >= altitude * 0.95
+            )
+            
+            if not await self._wait_for_condition(target_reached, wait_timeout, 
+                                                desc=f"reaching {altitude}m altitude"):
+                current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+                print(f"Takeoff timeout. Current altitude: {current_alt:.1f}m, Target: {altitude}m")
+                return False
+                
+            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+            print(f"✅ Takeoff complete! Current altitude: {current_alt:.1f}m")
+            return True
+            
+        except Exception as e:
+            print(f"Takeoff failed: {e}")
             return False

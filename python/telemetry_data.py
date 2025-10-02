@@ -8,8 +8,6 @@ class TelemetryData:
         if self.vehicle is None:
             return None
 
-        # Grab both relative and global frames so we can expose both AGL and MSL altitudes.
-        # Prefer the relative frame (global_relative_frame) for the primary 'alt' value when available.
         loc_rel = getattr(self.vehicle.location, "global_relative_frame", None)
         loc_global = getattr(self.vehicle.location, "global_frame", None)
         att = getattr(self.vehicle, "attitude", None)
@@ -26,6 +24,9 @@ class TelemetryData:
         last_heartbeat = getattr(self.vehicle, "last_heartbeat", None)
         system_status = getattr(self.vehicle, "system_status", None)
         home = getattr(self.vehicle, "home_location", None)
+        # Check if home location is actually set (not just None)
+        if home and (home.lat == 0.0 and home.lon == 0.0):
+            home = None  # Treat 0,0 as unset home location
 
         # Optional fields
         flight_time = getattr(self.vehicle, "flight_time", None)
@@ -94,8 +95,8 @@ class TelemetryData:
             "rc_channels": rc_data if rc_data is not None else {},
             "home_position": {
                 "lat": fmt(home.lat) if home and hasattr(home, "lat") else 0.0,
-                "lon": fmt(home.lon) if home and hasattr(home, "lon") else 0.0,
-                "alt": fmt(home.alt) if home and hasattr(home, "alt") else 0.0
+                "lon": fmt(home.lon) if home and hasattr(home, "lon") else 0.0,  
+                "alt": fmt(getattr(home, "alt", getattr(home, "altitude", 0.0))) if home else 0.0
             },
             "flight_time": fmt(flight_time) if flight_time is not None else 0.0,
             "status_text": status_text if status_text is not None else "",

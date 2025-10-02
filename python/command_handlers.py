@@ -1,6 +1,6 @@
-"""
-Command handlers for drone control operations.
-"""
+# Command handlers for drone control operations
+
+
 import json
 from typing import Dict, Any, Optional
 
@@ -13,9 +13,12 @@ async def handle_connect(start_telemetry_func, conn) -> Dict[str, Any]:
         drone_connected = controller is not None and controller.vehicle is not None
         
         if drone_connected:
-            return {"status": "ok", "detail": "drone connected successfully", "drone_connected": True}
+            return {
+                "status": "ok", 
+                "detail": "drone connected successfully", 
+                "drone_connected": True
+            }
         else:
-            # If drone connection failed, treat the entire operation as failed
             return {"status": "error", "detail": "drone connection failed - no vehicle detected", "drone_connected": False}
             
     except Exception as e:
@@ -44,7 +47,7 @@ async def handle_status(drone_connected: bool) -> Dict[str, Any]:
 
 
 async def handle_arm(conn) -> Dict[str, Any]:
-    """Handle arm command."""
+    # Handle arm command.
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -57,7 +60,7 @@ async def handle_arm(conn) -> Dict[str, Any]:
 
 
 async def handle_disarm(conn) -> Dict[str, Any]:
-    """Handle disarm command."""
+    # Handle disarm command
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -70,7 +73,7 @@ async def handle_disarm(conn) -> Dict[str, Any]:
 
 
 async def handle_message(payload: dict, broadcast_func) -> Dict[str, Any]:
-    """Handle message broadcast command."""
+    # Handle message broadcast command
     try:
         msg = payload.get("message", "")
         await broadcast_func(json.dumps({"type": "message", "message": msg}))
@@ -79,18 +82,40 @@ async def handle_message(payload: dict, broadcast_func) -> Dict[str, Any]:
         return {"status": "error", "detail": f"broadcast failed: {e}"}
 
 
+async def handle_sitl_setup(conn) -> Dict[str, Any]:
+    """Handle SITL setup command - configure vehicle for SITL use."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        result = await controller.setup_sitl_connection()
+        return {"status": "ok" if result else "error", 
+                "detail": "SITL setup successful" if result else "SITL setup failed"}
+    except Exception as e:
+        return {"status": "error", "detail": f"SITL setup exception: {e}"}
+
+
 async def handle_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
     """Handle takeoff command."""
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
     
-    # Add takeoff logic here when implementing
-    return {"status": "info", "detail": f"takeoff to {altitude}m not yet implemented"}
+    try:
+        # Validate altitude
+        if altitude <= 0 or altitude > 100:
+            return {"status": "error", "detail": f"altitude must be between 0 and 100m (got {altitude}m)"}
+            
+        result = await controller.takeoff(altitude)
+        return {"status": "ok" if result else "error", 
+                "detail": f"takeoff to {altitude}m successful" if result else f"takeoff to {altitude}m failed"}
+    except Exception as e:
+        return {"status": "error", "detail": f"takeoff exception: {e}"}
 
 
 async def handle_land(conn) -> Dict[str, Any]:
-    """Handle land command."""
+    # Handle land command
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -113,7 +138,7 @@ async def handle_emergency_disarm(conn) -> Dict[str, Any]:
 
 
 async def handle_rtl(conn) -> Dict[str, Any]:
-    """Handle return to launch command."""
+    # Handle return to launch command
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -130,7 +155,8 @@ COMMAND_HANDLERS = {
     "status": handle_status,
     "arm": handle_arm,
     "disarm": handle_disarm,
-    "emergency_disarm": handle_emergency_disarm,  # Emergency safety command
+    "emergency_disarm": handle_emergency_disarm,
+    "sitl_setup": handle_sitl_setup,
     "message": handle_message,
     "takeoff": handle_takeoff,
     "land": handle_land,
@@ -161,8 +187,17 @@ async def execute_command(
         return await handler(reconnect_telemetry_func)
     elif command_type == "status":
         return await handler(drone_connected)
-    elif command_type in ["arm", "disarm", "emergency_disarm", "takeoff", "land", "rtl"]:
+    elif command_type in ["arm", "disarm", "emergency_disarm", "sitl_setup", "land", "rtl"]:
         return await handler(conn)
+    elif command_type == "takeoff":
+        # Handle takeoff with optional altitude parameter
+        altitude = 10.0  # default altitude
+        if payload and "altitude" in payload:
+            try:
+                altitude = float(payload["altitude"])
+            except (ValueError, TypeError):
+                return {"status": "error", "detail": "invalid altitude parameter"}
+        return await handler(conn, altitude)
     elif command_type == "message":
         return await handler(payload, broadcast_func)
     else:

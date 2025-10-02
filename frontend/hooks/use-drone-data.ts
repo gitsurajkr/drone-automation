@@ -94,7 +94,6 @@ export function useDroneData() {
         const batteryLevel = payload.battery?.level ?? payload.battery?.voltage ?? 0;
 
         return {
-          // Prefer relative altitude (alt_rel) if the backend provided it (AGL). Fall back to alt.
           altitude: typeof payload.location?.alt_rel === 'number' ? payload.location.alt_rel : (payload.location?.alt ?? 0),
           velocity: {
             vx: payload.velocity?.vx ?? 0,
@@ -109,11 +108,9 @@ export function useDroneData() {
           },
 
           orientation: {
-            // convert attitude (radians) -> degrees for UI and map rotation
             roll: payload.attitude?.roll ?? 0,
             pitch: payload.attitude?.pitch ?? 0,
             yaw: payload.attitude?.yaw ?? 0,
-            // prefer explicit payload.heading (0..360) when available, otherwise normalize yaw
             heading: typeof payload.heading === 'number' ? payload.heading : ((radToDeg(payload.attitude?.yaw ?? 0) + 360) % 360),
           },
           armed: payload.armed ?? false,
@@ -136,7 +133,7 @@ export function useDroneData() {
             const pending = pendingRef.current.get(msg.id);
             if (pending) {
               if (msg.status && msg.status === 'ok') {
-                pending.resolve(msg); // Return the full response including drone_connected
+                pending.resolve(msg);
                 // Log successful command response
                 setLogs((prev) => [
                   ...prev.slice(-99),
@@ -151,7 +148,7 @@ export function useDroneData() {
                 ]);
               }
               pendingRef.current.delete(msg.id);
-              return; // don't process further as normal event
+              return; 
             }
           }
           // If backend forwarded an error (for example Python backend not connected), show toast

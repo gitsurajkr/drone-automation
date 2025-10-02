@@ -1,14 +1,6 @@
 "use client"
 
 import { useEffect, useState } from "react"
-function TimeOnly({ timestamp }: { timestamp: number }) {
-    const [time, setTime] = useState("");
-    useEffect(() => {
-        setTime(new Date(timestamp).toLocaleTimeString());
-    }, [timestamp]);
-    return <span className="text-xs text-muted-foreground font-mono">{time}</span>;
-}
-
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -21,6 +13,15 @@ interface AlertsPanelProps {
 }
 
 export function AlertsPanel({ alerts }: AlertsPanelProps) {
+
+    function TimeOnly({ timestamp }: { timestamp: number }) {
+    const [time, setTime] = useState("");
+    useEffect(() => {
+        setTime(new Date(timestamp).toLocaleTimeString());
+    }, [timestamp]);
+    return <span className="text-xs text-muted-foreground font-mono">{time}</span>;
+}
+
     const getAlertIcon = (type: DroneAlert["type"]) => {
         switch (type) {
             case "error":

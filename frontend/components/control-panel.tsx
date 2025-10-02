@@ -45,21 +45,21 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
       if (command === "connect") {
         const connected = response && typeof response === 'object' && response.drone_connected
         if (connected) {
-          toast.success("🟢 Drone connected successfully!")
+          toast.success("Drone connected successfully!")
         } else {
-          toast.error("❌ Drone connection failed - WebSocket OK but no drone")
+          toast.error("Drone connection failed - WebSocket OK but no drone")
         }
       } else if (command === "disconnect") {
-        toast.success("🔴 Drone disconnected")
+        toast.success("Drone disconnected")
         setDroneConnected?.(false)
       } else if (command === "arm") {
-        toast.success("⚠️ Drone ARMED - Ready for flight")
+        toast.success("Drone ARMED - Ready for flight")
         setLocalArmed(true)
       } else if (command === "disarm") {
-        toast.success("✅ Drone DISARMED - Safe state")
+        toast.success("Drone DISARMED - Safe state")
         setLocalArmed(false)
       } else if (command === "emergency_disarm") {
-        toast.success("🚨 EMERGENCY DISARM successful")
+        toast.success("EMERGENCY DISARM successful")
         setLocalArmed(false)
       } else {
         toast.success(`Command "${command}" executed`)
@@ -71,15 +71,15 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
 
       // Error toast messages
       if (command === "connect") {
-        toast.error(`❌ Connection failed: ${errorMsg}`)
+        toast.error(`Connection failed: ${errorMsg}`)
       } else if (command === "disconnect") {
-        toast.error(`❌ Disconnect failed: ${errorMsg}`)
+        toast.error(`Disconnect failed: ${errorMsg}`)
       } else if (command === "arm") {
-        toast.error(`⚠️ Failed to ARM: ${errorMsg}`)
+        toast.error(`Failed to ARM: ${errorMsg}`)
       } else if (command === "disarm") {
-        toast.error(`❌ Failed to DISARM: ${errorMsg}`)
+        toast.error(`Failed to DISARM: ${errorMsg}`)
       } else if (command === "emergency_disarm") {
-        toast.error(`🚨 EMERGENCY DISARM FAILED: ${errorMsg}`)
+        toast.error(`EMERGENCY DISARM FAILED: ${errorMsg}`)
       } else {
         toast.error(`Failed: ${command} - ${errorMsg}`)
       }
@@ -139,7 +139,7 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
             variant="outline"
             size="sm"
           >
-            📊 Status
+            Status
           </Button>
         </div>
 
@@ -159,7 +159,7 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
             variant="destructive"
             size="sm"
           >
-            🚨 EMERGENCY DISARM
+            EMERGENCY DISARM
           </Button>
         </div>
 
@@ -194,21 +194,21 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
             onClick={() => handleCommandAsync("takeoff")}
             disabled={connProcessing || pythonConnected !== true || !localArmed}
           >
-            🚁 Takeoff
+            Takeoff
           </Button>
           <Button
             variant="outline"
             onClick={() => handleCommandAsync("land")}
             disabled={connProcessing || pythonConnected !== true || !localArmed}
           >
-            🛬 Land
+            Land
           </Button>
           <Button
             variant="secondary"
             onClick={() => handleCommandAsync("rtl")}
             disabled={connProcessing || pythonConnected !== true || !localArmed}
           >
-            🏠 Return Home
+            Return Home
           </Button>
         </div>
 

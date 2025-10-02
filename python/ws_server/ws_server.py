@@ -4,7 +4,7 @@ import json
 from telemetry_data import TelemetryData
 from connection import Connection
 from controller import Controller
-from config import DRONE_ID, TELEMETRY_INTERVAL, WS_HOST, WS_PORT
+from config import WS_HOST, WS_PORT, DRONE_ID, TELEMETRY_INTERVAL, DEFAULT_CONNECTION_STRING, DEFAULT_BAUD_RATE, SITL_PATTERNS
 from command_handlers import execute_command
 
 connected_clients = set()
@@ -34,13 +34,30 @@ async def start_telemetry():
         return
 
     conn = Connection()
-    connected = await conn.connect("/dev/ttyACM0", 115200)
+    connection_string = DEFAULT_CONNECTION_STRING
+    baud_rate = DEFAULT_BAUD_RATE
+    
+    print(f"Connecting to vehicle on {connection_string} with baud {baud_rate}...")
+    connected = await conn.connect(connection_string, baud_rate)
     if not connected or conn.vehicle is None:
         print("Failed to connect to vehicle")
         drone_connected = False
         return
     try:
         conn.controller = Controller(conn)
+        
+        # Auto-setup SITL configuration if this appears to be a SITL connection
+        is_sitl = any(pattern in connection_string for pattern in SITL_PATTERNS)
+        if is_sitl:
+            print("SITL connection detected, configuring...")
+            setup_result = await conn.controller.setup_sitl_connection()
+            if setup_result:
+                print("✅ SITL configuration successful")
+            else:
+                print("⚠️ SITL configuration failed, continuing anyway...")
+        else:
+            print("Hardware connection detected - skipping SITL setup")
+            
     except Exception as e:
         print(f"Failed to create controller: {e}")
 
