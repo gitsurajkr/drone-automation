@@ -48,12 +48,35 @@ export interface DroneLog {
   type: "telemetry" | "command" | "system"
 }
 
+export interface BatteryEmergencyState {
+  isActive: boolean
+  batteryLevel: number
+  distanceToHome?: number | null
+  altitude: number
+  gpsfix: number
+  recommendation: string
+  reason: string
+  timeoutSeconds: number
+  remainingSeconds: number
+  promptId?: string
+}
+
 export function useDroneData() {
   const [droneData, setDroneData] = useState<DroneData | null>(null)
   const [alerts, setAlerts] = useState<DroneAlert[]>([])
   const [logs, setLogs] = useState<DroneLog[]>([])
   const [isConnected, setIsConnected] = useState(false)
   const [telemetryHistory, setTelemetryHistory] = useState<DroneData[]>([])
+  const [batteryEmergency, setBatteryEmergency] = useState<BatteryEmergencyState>({
+    isActive: false,
+    batteryLevel: 0,
+    altitude: 0,
+    gpsfix: 0,
+    recommendation: '',
+    reason: '',
+    timeoutSeconds: 8,
+    remainingSeconds: 8
+  })
   const wsRef = useRef<WebSocket | null>(null)
   const pendingRef = useRef<Map<string, { resolve: (value?: any) => void, reject: (err?: any) => void }>>(new Map())
 
@@ -165,6 +188,34 @@ export function useDroneData() {
           } else if (msg.event_type === "ALERT") {
             setAlerts((prev) => [...prev.slice(-9), msg.payload]);
             toast.error(msg.payload.message);
+          } else if (msg.type === "battery_emergency") {
+            // Handle battery emergency prompt
+            console.log("🚨 Battery emergency received:", msg);
+            setBatteryEmergency({
+              isActive: true,
+              batteryLevel: msg.battery_level,
+              distanceToHome: msg.distance_to_home,
+              altitude: msg.altitude,
+              gpsfix: msg.gps_fix,
+              recommendation: msg.recommendation,
+              reason: msg.reason,
+              timeoutSeconds: msg.timeout_seconds,
+              remainingSeconds: msg.timeout_seconds,
+              promptId: msg.prompt_id // Use the prompt_id from Python backend
+            })
+            toast.error(`🚨 BATTERY EMERGENCY: ${msg.battery_level}%`, { duration: 10000 })
+          } else if (msg.type === "battery_emergency_countdown") {
+            // Update countdown
+            console.log(`⏰ Battery emergency countdown: ${msg.remaining_seconds}s remaining`);
+            setBatteryEmergency(prev => ({
+              ...prev,
+              remainingSeconds: Math.max(0, msg.remaining_seconds)
+            }))
+          } else if (msg.type === "battery_emergency_action") {
+            // Emergency action taken, close modal
+            setBatteryEmergency(prev => ({ ...prev, isActive: false }))
+            const actionText = msg.action === "RTL_TIMEOUT" ? "RTL (timeout)" : msg.action
+            toast.success(`Emergency action: ${actionText}`)
           }
           setLogs((prev) => [
             ...prev.slice(-99),
@@ -223,6 +274,34 @@ export function useDroneData() {
   };
 
 
+  const handleBatteryEmergencyChoice = async (choice: 'RTL' | 'LAND') => {
+    console.log(`🚨 User chose: ${choice} for prompt: ${batteryEmergency.promptId}`);
+
+    if (!batteryEmergency.promptId) {
+      console.error("❌ No prompt ID available for emergency choice");
+      return;
+    }
+
+    try {
+      console.log("📤 Sending emergency response:", {
+        prompt_id: batteryEmergency.promptId,
+        choice: choice
+      });
+
+      await sendCommand('battery_emergency_response', {
+        prompt_id: batteryEmergency.promptId,
+        choice: choice
+      })
+
+      console.log("✅ Emergency choice sent successfully");
+      setBatteryEmergency(prev => ({ ...prev, isActive: false }))
+      toast.success(`Emergency choice sent: ${choice}`)
+    } catch (error) {
+      console.error("❌ Failed to send emergency choice:", error);
+      toast.error(`Failed to send emergency choice: ${error}`)
+    }
+  }
+
   // For unimplemented features (ARM, DISARM, etc.)
   const notImplemented = (feature: string) => {
     toast("Not implemented: " + feature);
@@ -238,7 +317,9 @@ export function useDroneData() {
     logs,
     isConnected,
     telemetryHistory,
+    batteryEmergency,
     sendCommand,
+    handleBatteryEmergencyChoice,
     notImplemented,
   }
 }

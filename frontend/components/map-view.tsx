@@ -37,7 +37,7 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
     const [pathHistory, setPathHistory] = useState<Array<{ lat: number; lng: number }>>([])
     const [waypoints, setWaypoints] = useState<Waypoint[]>([])
     const [isArmed, setIsArmed] = useState(false)
-    const [mission, setMission] = useState<Mission>({ altitude: 5, duration: 5, speed: 2 })
+    const [mission, setMission] = useState<Mission>({ altitude: 5, duration: 30, speed: 2 })
     const [newWaypoint, setNewWaypoint] = useState({ name: "", lat: "", lng: "", altitude: "5" })
     const [isProcessing, setIsProcessing] = useState(false)
 
@@ -88,7 +88,7 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
 
         await handleCommand("fly_timed", {
             altitude: mission.altitude,
-            duration: mission.duration * 60 // Convert minutes to seconds
+            duration: mission.duration // Duration already in seconds
         })
     }
 
@@ -208,7 +208,7 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
                             </div>
                             <div>
                                 <Label htmlFor="duration" className="text-xs">
-                                    Duration (min)
+                                    Duration (sec)
                                 </Label>
                                 <Input
                                     id="duration"
@@ -240,7 +240,7 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
                         </div>
 
                         <div className="text-xs text-muted-foreground bg-muted p-2 rounded">
-                            <strong>Mission:</strong> Fly to {mission.altitude}m for {mission.duration} min, then return home
+                            <strong>Mission:</strong> Fly to {mission.altitude}m for {mission.duration} sec, then return home
                         </div>
 
                         <div className="space-y-2">

@@ -77,7 +77,7 @@ class Connection:
                         consecutive_bad_heartbeats = 0  # Reset counter
                 else:
                     consecutive_bad_heartbeats = 0  # Reset on good heartbeat
-                    print(f"[Heartbeat] {self.last_heartbeat}")
+                    # print(f"[Heartbeat] {self.last_heartbeat}")
                 
                 await asyncio.sleep(interval)
 

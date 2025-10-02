@@ -7,13 +7,14 @@ import { VideoFeed } from "@/components/video-feed"
 import { ControlPanel } from "@/components/control-panel"
 import { AlertsPanel } from "@/components/alerts-panel"
 import { LogsPanel } from "@/components/logs-panel"
+import { BatteryEmergencyModal } from "@/components/battery-emergency-modal"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Map, Grid3X3 } from "lucide-react"
 import { useState, useEffect } from "react"
 
 export default function DroneDashboard() {
-  const { droneData, alerts, logs, isConnected, telemetryHistory, sendCommand } = useDroneData()
+  const { droneData, alerts, logs, isConnected, telemetryHistory, batteryEmergency, sendCommand, handleBatteryEmergencyChoice } = useDroneData()
   const [currentView, setCurrentView] = useState<"dashboard" | "map">("dashboard")
   const [pythonConnected, setPythonConnected] = useState<boolean>(false)
   const [droneConnected, setDroneConnected] = useState<boolean>(false)
@@ -130,6 +131,19 @@ export default function DroneDashboard() {
           isConnected={isConnected}
         />
       )}
+
+      {/* Battery Emergency Modal */}
+      <BatteryEmergencyModal
+        isOpen={batteryEmergency.isActive}
+        batteryLevel={batteryEmergency.batteryLevel}
+        distanceToHome={batteryEmergency.distanceToHome}
+        altitude={batteryEmergency.altitude}
+        gpsfix={batteryEmergency.gpsfix}
+        recommendation={batteryEmergency.recommendation}
+        reason={batteryEmergency.reason}
+        remainingSeconds={batteryEmergency.remainingSeconds}
+        onChoice={handleBatteryEmergencyChoice}
+      />
     </div>
   )
 }
