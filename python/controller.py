@@ -176,65 +176,66 @@ class Controller:
         vehicle = self.connection.vehicle
 
         try:
+            print("[ARM] Starting arm sequence")
+            
             # Ensure vehicle is in GUIDED mode before arming
             current_mode = getattr(vehicle.mode, "name", "UNKNOWN")
             if current_mode != "GUIDED":
-                print(f"Current mode: {current_mode}. Setting mode to GUIDED...")
+                print(f"[ARM] Mode: {current_mode} -> GUIDED")
                 vehicle.mode = VehicleMode("GUIDED")
                 if not await self._wait_for_condition(lambda: getattr(vehicle.mode, "name", None) == "GUIDED", wait_mode_timeout, desc="GUIDED mode"):
-                    print("Failed to set GUIDED mode.")
+                    print("[ARM] FAILED - Could not set GUIDED mode")
                     return False
-                print("Vehicle is now in GUIDED mode.")
+                print("[ARM] Mode set to GUIDED")
             else:
-                print("Vehicle already in GUIDED mode.")
+                print("[ARM] Mode: Already in GUIDED")
 
             # Check if already armed
             if getattr(vehicle, "armed", False):
-                print("Vehicle is already armed.")
+                print("[ARM] Already armed")
                 return True
 
             # Perform pre-arm throttle safety check
             if not await self.pre_arm_throttle_check():
-                print("❌ Pre-arm throttle check failed - ensure throttle is at minimum")
+                print("[ARM] FAILED - Throttle safety check failed")
                 return False
 
-            print("Arming vehicle...")
+            print("[ARM] Sending arm command")
             vehicle.armed = True
             
             # Wait until the vehicle confirms it is armed
             if not await self._wait_for_condition(lambda: getattr(vehicle, "armed", False),
                                                   wait_arm_timeout, desc="arming confirmation"):
-                print("Arming failed - vehicle did not confirm armed state.")
+                print("[ARM] FAILED - No arm confirmation from vehicle")
                 return False
 
-            print("✅ Vehicle is armed and ready.")
-            print("⏱️  Note: Vehicle will auto-disarm in ~10 seconds if no flight command is given")
-            print("   Quick actions: takeoff, RTL, or manual disarm")
+            print("[ARM] SUCCESS - Vehicle armed and ready")
+            print("[ARM] WARNING - Auto-disarm in 10 seconds without flight command")
             return True
         except Exception as e:
-            print(f"Arming failed: {e}")
+            print(f"[ARM] FAILED - Exception: {e}")
             return False
 
     async def arm_and_takeoff(self, altitude: float = 5.0, *, wait_mode_timeout=10.0, wait_arm_timeout=20.0) -> bool:
         """Arm vehicle and immediately takeoff - prevents auto-disarm timeout."""
-        print(f"🚁 Arm + Takeoff sequence starting (altitude: {altitude}m)")
+        print(f"[ARM+TAKEOFF] Starting sequence to {altitude}m")
         
         # Step 1: Arm the vehicle
         if not await self.arm(wait_mode_timeout=wait_mode_timeout, wait_arm_timeout=wait_arm_timeout):
-            print("❌ Arming failed - aborting takeoff")
+            print("[ARM+TAKEOFF] FAILED - Arming unsuccessful")
             return False
         
         # Step 2: Immediate takeoff to prevent auto-disarm
-        print("🚀 Starting immediate takeoff to prevent auto-disarm...")
+        print("[ARM+TAKEOFF] Proceeding to takeoff (preventing auto-disarm)")
         await asyncio.sleep(0.5)  # Brief pause to ensure arming is stable
         
         if not await self.takeoff(altitude):
-            print("❌ Takeoff failed after arming")
+            print("[ARM+TAKEOFF] FAILED - Takeoff unsuccessful")
             # Try to disarm safely
             await self.disarm()
             return False
         
-        print("✅ Arm + Takeoff sequence completed successfully!")
+        print(f"[ARM+TAKEOFF] SUCCESS - Now at {altitude}m altitude")
         return True
 
     async def disarm(self, *, wait_disarm_timeout=15.0):
@@ -244,18 +245,26 @@ class Controller:
         vehicle = self.connection.vehicle
 
         if not getattr(vehicle, "armed", False):
-            print("Vehicle already disarmed.")
+            print("[DISARM] Already disarmed")
             return True
 
         try:
-            print("Disarming vehicle...")
+            # Check altitude before disarming for safety
+            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+            print(f"[DISARM] Current altitude: {current_alt:.1f}m")
+            
+            if current_alt > 2.0:
+                print(f"[DISARM] WARNING - Disarming at {current_alt:.1f}m altitude")
+            
+            print("[DISARM] Sending disarm command")
             vehicle.armed = False
             if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True),wait_disarm_timeout, desc="disarming"):
+                print("[DISARM] FAILED - No disarm confirmation")
                 return False
-            print("Vehicle is disarmed.")
+            print("[DISARM] SUCCESS - Vehicle disarmed safely")
             return True
         except Exception as e:
-            print(f"Disarming failed: {e}")
+            print(f"[DISARM] FAILED - Exception: {e}")
             return False
 
     async def emergency_disarm(self):
@@ -273,21 +282,23 @@ class Controller:
         try:
             # CHECK ALTITUDE FIRST - Don't kill drone in mid-air!
             current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+            print(f"[EMERGENCY] Current altitude: {current_alt:.1f}m")
             
             if current_alt > 2.0:  # If above 2m, emergency land instead!
-                print(f"🚨 HIGH ALTITUDE EMERGENCY ({current_alt:.1f}m) - EMERGENCY LANDING INSTEAD OF DISARM")
+                print(f"[EMERGENCY] HIGH ALTITUDE - Emergency landing instead of disarm")
                 self.flight_logger.log_emergency("emergency_land_high_altitude", f"altitude_{current_alt:.1f}m")
                 return await self.emergency_land()
             else:
-                print("🚨 LOW ALTITUDE EMERGENCY - Safe to disarm")
+                print("[EMERGENCY] LOW ALTITUDE - Safe to disarm")
                 # Cut throttle first for safety
                 await self.set_throttle(0)
+                print("[EMERGENCY] Cutting power")
                 vehicle.armed = False
                 # Shorter timeout for emergency
                 if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 5.0, desc="emergency disarming"):
-                    print("Emergency disarm timeout - vehicle may still be armed!")
+                    print("[EMERGENCY] TIMEOUT - Vehicle may still be armed")
                     return False
-                print("Emergency disarm successful.")
+                print("[EMERGENCY] SUCCESS - Vehicle disarmed")
                 return True
         except Exception as e:
             print(f"Emergency disarm failed: {e}")
@@ -453,26 +464,38 @@ class Controller:
             # Continue with takeoff but log the issue
             
         try:
-            print(f"Taking off to {altitude}m altitude...")
+            print(f"[TAKEOFF] Target altitude: {altitude}m")
+            print("[TAKEOFF] Sending takeoff command")
             
             # Command takeoff
             vehicle.simple_takeoff(altitude)
             
-            # Wait until vehicle reaches target altitude (within 95% of target)
-            target_reached = lambda: (
-                getattr(vehicle.location, "global_relative_frame", None) and
-                getattr(vehicle.location.global_relative_frame, "alt", 0) >= altitude * 0.95
-            )
+            # Real-time altitude tracking with progress updates
+            print(f"[TAKEOFF] Climbing to {altitude}m...")
+            start_time = time.time()
+            last_logged_meter = -1
             
-            if not await self._wait_for_condition(target_reached, wait_timeout, 
-                                                desc=f"reaching {altitude}m altitude"):
+            while True:
                 current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
-                print(f"Takeoff timeout. Current altitude: {current_alt:.1f}m, Target: {altitude}m")
-                return False
                 
-            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
-            print(f"✅ Takeoff complete! Current altitude: {current_alt:.1f}m")
-            return True
+                # Log each meter milestone
+                current_meter = int(current_alt)
+                if current_meter > last_logged_meter and current_meter > 0:
+                    progress_percent = min(100, int((current_alt / altitude) * 100))
+                    print(f"[TAKEOFF] Altitude: {current_alt:.1f}m ({progress_percent}%)")
+                    last_logged_meter = current_meter
+                
+                # Check if target reached (within 95% of target)
+                if current_alt >= altitude * 0.95:
+                    print(f"[TAKEOFF] SUCCESS - Reached {current_alt:.1f}m (target: {altitude}m)")
+                    return True
+                
+                # Check timeout
+                if time.time() - start_time > wait_timeout:
+                    print(f"[TAKEOFF] TIMEOUT - Current: {current_alt:.1f}m, Target: {altitude}m")
+                    return False
+                
+                await asyncio.sleep(0.5)  # Update every 500ms
             
         except Exception as e:
             print(f"Takeoff failed: {e}")
@@ -505,10 +528,11 @@ class Controller:
             self.flight_logger.log_emergency("forced_land_here", f"altitude_{current_alt:.1f}m")
             
         try:
-            print("Landing vehicle at current location...")
+            print(f"[LAND] Starting descent from {current_alt:.1f}m")
             self.flight_logger.log_landing({"altitude": current_alt, "forced": force_land_here})
             
             # Set mode to LAND
+            print("[LAND] Setting LAND mode")
             vehicle.mode = VehicleMode("LAND")
             
             # Wait for LAND mode confirmation
@@ -516,24 +540,35 @@ class Controller:
                 lambda: getattr(vehicle.mode, "name", None) == "LAND", 
                 10.0, desc="LAND mode"
             ):
-                print("Failed to set LAND mode.")
+                print("[LAND] FAILED - Could not set LAND mode")
                 return False
                 
-            print("Landing mode engaged.")
+            print("[LAND] Descending...")
             
-            # Wait until vehicle lands (altitude < 0.5m and disarmed)
-            landed_condition = lambda: (
-                getattr(vehicle.location.global_relative_frame, "alt", 999) < 0.5 and
-                not getattr(vehicle, "armed", True)
-            )
+            # Real-time descent tracking
+            start_time = time.time()
+            last_logged_alt = current_alt
             
-            if not await self._wait_for_condition(landed_condition, wait_timeout, desc="landing completion"):
+            while True:
                 current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
-                print(f"Landing timeout. Current altitude: {current_alt:.1f}m")
-                return False
+                armed = getattr(vehicle, "armed", False)
                 
-            print("✅ Landing complete!")
-            return True
+                # Log significant altitude changes (every 2m or so)
+                if abs(current_alt - last_logged_alt) >= 2.0 or current_alt < 5.0:
+                    print(f"[LAND] Altitude: {current_alt:.1f}m")
+                    last_logged_alt = current_alt
+                
+                # Check if landed (altitude < 0.5m and disarmed)
+                if current_alt < 0.5 and not armed:
+                    print("[LAND] SUCCESS - Touchdown complete")
+                    return True
+                
+                # Check timeout
+                if time.time() - start_time > wait_timeout:
+                    print(f"[LAND] TIMEOUT - Still at {current_alt:.1f}m")
+                    return False
+                
+                await asyncio.sleep(1.0)  # Update every second
             
         except Exception as e:
             print(f"Landing failed: {e}")
@@ -554,10 +589,11 @@ class Controller:
                 self.flight_logger.log_emergency("rtl_no_home", "home_position_invalid")
                 return await self.emergency_land()
             
-            print(f"Returning to launch (RTL) - Home: {home.lat:.6f}, {home.lon:.6f}")
+            print(f"[RTL] Home position: {home.lat:.6f}, {home.lon:.6f}")
             self.flight_logger.log_rtl("manual_command")
             
             # Set mode to RTL
+            print("[RTL] Setting RTL mode")
             vehicle.mode = VehicleMode("RTL")
             
             # Wait for RTL mode confirmation
@@ -565,20 +601,36 @@ class Controller:
                 lambda: getattr(vehicle.mode, "name", None) == "RTL", 
                 10.0, desc="RTL mode"
             ):
-                print("Failed to set RTL mode.")
+                print("[RTL] FAILED - Could not set RTL mode")
                 return False
                 
-            print("RTL mode engaged - returning to launch point...")
-                
-            # Wait until RTL completes (vehicle disarmed and near home)
-            rtl_complete = lambda: not getattr(vehicle, "armed", True)
+            print("[RTL] Returning to launch point...")
             
-            if not await self._wait_for_condition(rtl_complete, wait_timeout, desc="RTL completion"):
-                print("RTL timeout - vehicle may still be returning")
-                return False
+            # Track RTL progress with periodic updates
+            start_time = time.time()
+            last_update = 0
+            
+            while True:
+                current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+                armed = getattr(vehicle, "armed", False)
+                elapsed = time.time() - start_time
                 
-            print("✅ Return to Launch complete!")
-            return True
+                # Log progress every 10 seconds
+                if elapsed - last_update >= 10:
+                    print(f"[RTL] Returning... Altitude: {current_alt:.1f}m (elapsed: {elapsed:.0f}s)")
+                    last_update = elapsed
+                
+                # Check if RTL completed (vehicle disarmed)
+                if not armed:
+                    print(f"[RTL] SUCCESS - Returned to launch (elapsed: {elapsed:.0f}s)")
+                    return True
+                
+                # Check timeout
+                if elapsed > wait_timeout:
+                    print(f"[RTL] TIMEOUT - Still returning after {elapsed:.0f}s")
+                    return False
+                
+                await asyncio.sleep(2.0)  # Update every 2 seconds
             
         except Exception as e:
             print(f"RTL failed: {e}")
@@ -617,7 +669,7 @@ class Controller:
             return False
             
         try:
-            print(f"🚁 Starting timed mission: {altitude}m altitude for {duration}s")
+            print(f"[MISSION] Timed flight: {altitude}m for {duration}s")
             self.current_mission = {
                 "type": "timed_flight",
                 "altitude": altitude,
@@ -627,38 +679,42 @@ class Controller:
             }
             
             # Step 1: Takeoff to target altitude
-            print(f"📈 Taking off to {altitude}m...")
             if not await self.takeoff(altitude):
-                print("❌ Takeoff failed - aborting mission")
+                print("[MISSION] FAILED - Takeoff unsuccessful")
                 return False
                 
             # Step 2: Hold position for specified duration
-            print(f"⏱️  Holding altitude {altitude}m for {duration} seconds...")
+            print(f"[MISSION] Holding position for {duration} seconds")
             mission_start = datetime.now()
+            last_log_time = 0
             
             while (datetime.now() - mission_start).total_seconds() < duration:
                 # Monitor vehicle status during mission
                 if not getattr(vehicle, "armed", False):
-                    print("⚠️  Vehicle disarmed during mission - mission interrupted")
+                    print("[MISSION] INTERRUPTED - Vehicle disarmed")
                     break
                     
                 current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
-                remaining_time = duration - (datetime.now() - mission_start).total_seconds()
+                elapsed = (datetime.now() - mission_start).total_seconds()
+                remaining_time = duration - elapsed
                 
-                if remaining_time % 10 < 1:  # Log every ~10 seconds
-                    print(f"   Mission status: altitude={current_alt:.1f}m, remaining={remaining_time:.0f}s")
+                # Log every 10 seconds
+                if elapsed - last_log_time >= 10:
+                    progress_percent = int((elapsed / duration) * 100)
+                    print(f"[MISSION] Progress: {progress_percent}% | Altitude: {current_alt:.1f}m | Remaining: {remaining_time:.0f}s")
+                    last_log_time = elapsed
                 
                 await asyncio.sleep(1)
             
-            print(f"✅ Timed flight completed - returning to launch")
+            print("[MISSION] Flight duration complete - returning to launch")
             
             # Step 3: Return to Launch
             if not await self.rtl():
-                print("⚠️  RTL failed - attempting emergency land")
+                print("[MISSION] RTL failed - attempting emergency landing")
                 await self.land()
                 return False
                 
-            print("🎯 Timed mission completed successfully!")
+            print("[MISSION] SUCCESS - Timed mission completed")
             self.current_mission = None
             return True
             

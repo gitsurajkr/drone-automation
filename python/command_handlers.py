@@ -364,10 +364,16 @@ async def execute_command(
     _active_commands[command_type] = True
     _last_command_time[command_type] = time.time()
     
+    # Log command execution
+    print(f"[COMMAND] Executing: {command_type.upper()}")
+    if payload:
+        print(f"[COMMAND] Parameters: {payload}")
+    
     try:
         # Execute the command based on its type
         handler = COMMAND_HANDLERS.get(command_type)
         if not handler:
+            print(f"[COMMAND] ERROR - Unknown command: {command_type}")
             return {"status": "error", "detail": f"unknown command: {command_type}"}
         
         if command_type == "connect":
@@ -424,6 +430,14 @@ async def execute_command(
             result = await handler(payload, broadcast_func)
         else:
             result = {"status": "error", "detail": f"handler not implemented for: {command_type}"}
+        
+        # Log command result
+        status = result.get("status", "unknown")
+        if status == "ok":
+            print(f"[COMMAND] SUCCESS - {command_type.upper()} completed")
+        else:
+            detail = result.get("detail", "no details")
+            print(f"[COMMAND] FAILED - {command_type.upper()}: {detail}")
         
         return result
         
