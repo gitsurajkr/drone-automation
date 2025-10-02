@@ -7,7 +7,7 @@ Frontend (Next.js) :3000
        ↓
 Node.js Backend :4001 ←→ Python WebSocket :8765
        ↓                        ↓
-Health Check :4002          DroneKit + SITL/Hardware
+Health Check :4002          DroneKit + Hardware
 ```
 
 ## ✅ **WHAT'S BEEN IMPLEMENTED**
@@ -15,7 +15,7 @@ Health Check :4002          DroneKit + SITL/Hardware
 ### 🔧 **Backend Integration**
 - ✅ **Python WebSocket Server** (`ws://localhost:8765`)
   - Enhanced safety validation system
-  - SITL auto-configuration with hardware protection
+  - Enhanced hardware safety validation
   - Comprehensive flight operations (takeoff, land, RTL, timed flight)
   - Real-time telemetry broadcasting
   - Safety logging and audit trails
@@ -41,7 +41,7 @@ Health Check :4002          DroneKit + SITL/Hardware
   - Waypoint drawing capabilities (foundation for future)
 
 ### 🛡️ **Safety Systems**
-- ✅ **SITL Pattern Security** - Hardware connections protected
+- ✅ **Hardware Safety** - Comprehensive hardware connection protection
 - ✅ **Parameter Validation** - Altitude, duration, battery limits
 - ✅ **Pre-flight Checks** - GPS, battery, system status validation
 - ✅ **Flight Monitoring** - Real-time safety monitoring during missions
@@ -87,19 +87,18 @@ cd /home/novaworld/drone-controller/frontend
 npm run dev
 ```
 
-### 2. **SITL Testing** (Recommended First!)
+### 2. **Hardware Drone Testing**
 ```bash
-# Start SITL simulator in separate terminal
-cd /home/novaworld/drone-controller/python
-source venv/bin/activate
-# Your SITL startup command here
+# Connect your hardware drone to /dev/ttyACM0 or /dev/ttyUSB0
+# Update connection string in config.py if needed
 
 # Frontend: http://localhost:3000
-# 1. Click "Connect" - should show SITL configuration
-# 2. Click "ARM" - should arm successfully  
-# 3. Set altitude: 5m, duration: 5sec
-# 4. Click "Start Timed Mission"
-# 5. Watch drone takeoff, hold, RTL, land
+# 1. Click "Connect" - should connect to hardware drone
+# 2. Verify GPS lock and safety checks
+# 3. Click "ARM" - should arm successfully  
+# 4. Set altitude: 5m, duration: 5sec
+# 5. Click "Start Timed Mission"
+# 6. Watch drone takeoff, hold, RTL, land
 ```
 
 ### 3. **Safety Validation**
@@ -137,7 +136,7 @@ python test_safety.py  # Run comprehensive safety tests
 ## ⚠️ **SAFETY FEATURES**
 
 ### **Automatic Protections**
-- ✅ SITL-only parameter modifications (hardware protected)
+- ✅ Hardware-specific safety validations
 - ✅ Pre-flight condition validation
 - ✅ Flight envelope limits (altitude, duration, battery)
 - ✅ Emergency procedures with logging
@@ -159,8 +158,7 @@ python test_safety.py  # Run comprehensive safety tests
 - ✅ Comprehensive flight operations available
 
 ### **Next Steps:**
-1. **Test with SITL**: Validate all operations in simulation
-2. **Hardware Testing**: Carefully test with real drone (SITL safety patterns will protect hardware)
+1. **Hardware Testing**: Carefully test with real drone (comprehensive safety validation included)
 3. **Mission Customization**: Adjust safety limits in `safety_config.py` for your environment
 4. **Waypoint Implementation**: Build on the map drawing foundation for full waypoint missions
 

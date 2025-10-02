@@ -12,11 +12,11 @@ class SafetyConfig:
     MAX_FLIGHT_TIME = 300       # seconds - 5 minutes max flight
     MAX_HORIZONTAL_DISTANCE = 100  # meters from home
     
-    # Battery safety
-    MIN_BATTERY_VOLTAGE_3S = 10.5   # volts for 3S LiPo
-    MIN_BATTERY_VOLTAGE_4S = 14.0   # volts for 4S LiPo  
-    MIN_BATTERY_VOLTAGE_6S = 21.0   # volts for 6S LiPo
-    MIN_BATTERY_LEVEL = 20          # percentage
+    # Battery safety - UPDATED FOR REAL DRONE PROTECTION
+    MIN_BATTERY_VOLTAGE_3S = 11.1   # volts for 3S LiPo (3.7V per cell - SAFE)
+    MIN_BATTERY_VOLTAGE_4S = 14.8   # volts for 4S LiPo (3.7V per cell - SAFE)
+    MIN_BATTERY_VOLTAGE_6S = 22.2   # volts for 6S LiPo (3.7V per cell - SAFE)
+    MIN_BATTERY_LEVEL = 30          # percentage - INCREASED for safety margin
     
     # GPS and navigation
     MIN_GPS_FIX = 3                 # GPS fix type (3D fix minimum)
@@ -94,6 +94,35 @@ class SafetyConfig:
             return False, f"Flight duration too long: {duration}s (maximum: {cls.MAX_FLIGHT_TIME}s)"
         return True, "Flight duration within safe limits"
     
+    @classmethod
+    def validate_gps_integrity(cls, gps_data: Dict[str, Any]) -> tuple[bool, str]:
+        """Validate GPS integrity to prevent spoofing/interference crashes."""
+        # Check HDOP (GPS accuracy)
+        eph = gps_data.get('eph', 999)  # Horizontal accuracy
+        if eph > 2.0:
+            return False, f"GPS accuracy poor: HDOP {eph} (need <2.0)"
+        
+        # Check for impossible speeds (GPS spoofing detection)
+        groundspeed = gps_data.get('groundspeed', 0)
+        if groundspeed > 50:  # 50 m/s = 180 km/h (impossible for most drones)
+            return False, f"GPS may be spoofed: impossible speed {groundspeed} m/s"
+        
+        return True, "GPS integrity OK"
+
+    @classmethod
+    def validate_battery_under_load(cls, voltage_idle: float, voltage_load: float) -> tuple[bool, str]:
+        """Detect weak batteries that fail under load."""
+        if voltage_idle <= 0 or voltage_load <= 0:
+            return True, "Battery load test skipped"
+            
+        voltage_drop = voltage_idle - voltage_load
+        if voltage_drop > 0.8:  # 0.8V drop indicates very weak battery
+            return False, f"Battery weak under load: {voltage_drop:.1f}V drop"
+        elif voltage_drop > 0.5:  # 0.5V drop indicates marginal battery
+            return False, f"Battery marginal under load: {voltage_drop:.1f}V drop"
+        
+        return True, f"Battery strong under load: {voltage_drop:.1f}V drop"
+
     @classmethod
     def get_emergency_actions(cls) -> list[str]:
         """Get list of available emergency actions."""

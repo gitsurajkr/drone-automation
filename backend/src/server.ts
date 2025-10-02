@@ -43,7 +43,9 @@ wss.on('connection', (ws) => {
                 'connect', 'disconnect', 'reconnect', 'status',
                 'arm', 'disarm', 'emergency_disarm',
                 'takeoff', 'land', 'rtl',
-                'fly_timed', 'mission_status', 'sitl_setup'
+                'fly_timed', 'mission_status',
+                'set_throttle', 'release_throttle',
+                'emergency_land', 'verify_home', 'force_land_here'
             ];
 
             if (enhancedCommands.includes(cmd)) {

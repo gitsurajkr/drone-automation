@@ -13,7 +13,6 @@ from telemetry_data import TelemetryData
 from connection import Connection
 from controller import Controller
 from config import WS_HOST, WS_PORT, DRONE_ID, TELEMETRY_INTERVAL, DEFAULT_CONNECTION_STRING, DEFAULT_BAUD_RATE
-from sitl_config import SITLConfig
 from command_handlers import execute_command
 
 connected_clients = set()
@@ -54,18 +53,7 @@ async def start_telemetry():
         return
     try:
         conn.controller = Controller(conn)
-        
-        # Auto-setup SITL configuration using enhanced safety validation
-        if SITLConfig.is_sitl_connection(connection_string):
-            print("🔍 SITL connection detected, validating safety...")
-            setup_result = await conn.controller.setup_sitl_connection(connection_string)
-            if setup_result:
-                print("✅ SITL configuration successful")
-            else:
-                print("⚠️ SITL configuration failed, continuing anyway...")
-        else:
-            print("🔧 Hardware connection detected - skipping SITL setup")
-            
+        print("� Hardware drone controller initialized")
     except Exception as e:
         print(f"Failed to create controller: {e}")
 

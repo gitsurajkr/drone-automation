@@ -58,11 +58,27 @@ class Connection:
         self.monitoring = True
 
         async def monitor():
+            consecutive_bad_heartbeats = 0
             while self.monitoring and self.vehicle:
                 self.last_heartbeat = getattr(self.vehicle, "last_heartbeat", None)
                 if self.initial_heartbeat is None:
                     self.initial_heartbeat = self.last_heartbeat
-                print(f"[Heartbeat] {self.last_heartbeat}")
+                
+                # CRITICAL: Connection watchdog for safety
+                if self.last_heartbeat and self.last_heartbeat > 3.0:  # 3 second timeout
+                    consecutive_bad_heartbeats += 1
+                    print(f"⚠️ [Heartbeat] Connection degraded: {self.last_heartbeat}s (attempt {consecutive_bad_heartbeats})")
+                    
+                    if consecutive_bad_heartbeats >= 3:  # 3 consecutive bad heartbeats
+                        print(f"🚨 CONNECTION LOST! Triggering emergency procedures!")
+                        # Trigger emergency procedures through controller if available
+                        if hasattr(self, 'emergency_callback'):
+                            await self.emergency_callback("connection_loss")
+                        consecutive_bad_heartbeats = 0  # Reset counter
+                else:
+                    consecutive_bad_heartbeats = 0  # Reset on good heartbeat
+                    print(f"[Heartbeat] {self.last_heartbeat}")
+                
                 await asyncio.sleep(interval)
 
         self.monitor_task = asyncio.create_task(monitor())

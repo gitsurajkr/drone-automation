@@ -2,7 +2,13 @@
 
 
 import json
+import time
 from typing import Dict, Any, Optional
+
+# Global command tracking for conflict detection
+_active_commands = {}
+_last_command_time = {}
+COMMAND_TIMEOUT = 30.0  # seconds
 
 
 async def handle_connect(start_telemetry_func, conn) -> Dict[str, Any]:
@@ -82,20 +88,6 @@ async def handle_message(payload: dict, broadcast_func) -> Dict[str, Any]:
         return {"status": "error", "detail": f"broadcast failed: {e}"}
 
 
-async def handle_sitl_setup(conn) -> Dict[str, Any]:
-    """Handle SITL setup command - configure vehicle for SITL use."""
-    controller = getattr(conn, "controller", None)
-    if controller is None:
-        return {"status": "error", "detail": "no controller available"}
-    
-    try:
-        result = await controller.setup_sitl_connection()
-        return {"status": "ok" if result else "error", 
-                "detail": "SITL setup successful" if result else "SITL setup failed"}
-    except Exception as e:
-        return {"status": "error", "detail": f"SITL setup exception: {e}"}
-
-
 async def handle_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
     """Handle takeoff command."""
     controller = getattr(conn, "controller", None)
@@ -115,17 +107,30 @@ async def handle_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
 
 
 async def handle_land(conn) -> Dict[str, Any]:
-    """Handle land command - safely land at current location."""
+    """Handle land command - defaults to RTL for safety."""
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
     
     try:
-        result = await controller.land()
+        result = await controller.land()  # Now defaults to RTL for safety
         return {"status": "ok" if result else "error", 
-                "detail": "landing successful" if result else "landing failed"}
+                "detail": "landing/RTL successful" if result else "landing/RTL failed"}
     except Exception as e:
         return {"status": "error", "detail": f"landing exception: {e}"}
+
+async def handle_force_land_here(conn) -> Dict[str, Any]:
+    """Handle force land here command - DANGEROUS, lands at current location."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        result = await controller.force_land_here()
+        return {"status": "ok" if result else "error", 
+                "detail": "force land initiated" if result else "force land failed"}
+    except Exception as e:
+        return {"status": "error", "detail": f"force land exception: {e}"}
 
 
 async def handle_emergency_disarm(conn) -> Dict[str, Any]:
@@ -192,6 +197,74 @@ async def handle_mission_status(conn) -> Dict[str, Any]:
         return {"status": "error", "detail": f"mission status exception: {e}"}
 
 
+async def handle_set_throttle(conn, throttle_percent: float = 0.0) -> Dict[str, Any]:
+    """Handle throttle control command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Validate throttle range
+        if throttle_percent < 0 or throttle_percent > 100:
+            return {"status": "error", "detail": f"throttle must be between 0-100% (got {throttle_percent}%)"}
+            
+        result = await controller.set_throttle(throttle_percent)
+        return {"status": "ok" if result else "error", 
+                "detail": f"throttle set to {throttle_percent}%" if result else "throttle control failed"}
+    except Exception as e:
+        return {"status": "error", "detail": f"throttle control exception: {e}"}
+
+
+async def handle_release_throttle(conn) -> Dict[str, Any]:
+    """Handle release throttle control command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        result = await controller.release_throttle_control()
+        return {"status": "ok" if result else "error", 
+                "detail": "throttle control released to autopilot" if result else "failed to release throttle control"}
+    except Exception as e:
+        return {"status": "error", "detail": f"release throttle exception: {e}"}
+
+async def handle_emergency_land(conn) -> Dict[str, Any]:
+    """Handle emergency land command - critical safety function."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        result = await controller.emergency_land()
+        return {"status": "ok" if result else "error", 
+                "detail": "emergency land initiated" if result else "emergency land failed"}
+    except Exception as e:
+        return {"status": "error", "detail": f"emergency land exception: {e}"}
+
+async def handle_verify_home(conn) -> Dict[str, Any]:
+    """Handle home location verification command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        is_valid, message = controller.verify_home_location()
+        distance = controller.get_home_distance()
+        
+        result = {
+            "status": "ok" if is_valid else "warning",
+            "detail": message,
+            "home_valid": is_valid
+        }
+        
+        if distance is not None:
+            result["distance_to_home"] = round(distance, 1)
+            
+        return result
+    except Exception as e:
+        return {"status": "error", "detail": f"home verification exception: {e}"}
+
+
 # Command registry - maps command types to their handlers
 COMMAND_HANDLERS = {
     "connect": handle_connect,
@@ -201,15 +274,46 @@ COMMAND_HANDLERS = {
     "arm": handle_arm,
     "disarm": handle_disarm,
     "emergency_disarm": handle_emergency_disarm,
-    "sitl_setup": handle_sitl_setup,
     "message": handle_message,
     "takeoff": handle_takeoff,
     "land": handle_land,
     "rtl": handle_rtl,  
     "fly_timed": handle_fly_timed,
     "mission_status": handle_mission_status,
+    "set_throttle": handle_set_throttle,
+    "release_throttle": handle_release_throttle,
+    "emergency_land": handle_emergency_land,
+    "verify_home": handle_verify_home,
+    "force_land_here": handle_force_land_here,
 }
 
+
+def check_command_conflicts(command_type: str) -> tuple[bool, str]:
+    """Check for conflicting commands that could cause dangerous situations."""
+    current_time = time.time()
+    
+    # Clean up old commands
+    expired_commands = [cmd for cmd, start_time in _last_command_time.items() 
+                       if current_time - start_time > COMMAND_TIMEOUT]
+    for cmd in expired_commands:
+        _active_commands.pop(cmd, None)
+        _last_command_time.pop(cmd, None)
+    
+    # Define conflicting command groups
+    flight_commands = ["takeoff", "land", "rtl", "fly_timed"]
+    critical_commands = ["emergency_disarm", "emergency_land"]
+    
+    # Check for conflicts
+    if command_type in flight_commands:
+        active_flight_cmds = [cmd for cmd in _active_commands if cmd in flight_commands]
+        if active_flight_cmds:
+            return False, f"Flight command conflict: {active_flight_cmds[0]} already active"
+    
+    # Emergency commands can interrupt anything
+    if command_type in critical_commands:
+        _active_commands.clear()  # Clear all active commands
+    
+    return True, "No conflicts"
 
 async def execute_command(
     command_type: str,
@@ -221,44 +325,69 @@ async def execute_command(
     reconnect_telemetry_func,
     broadcast_func
 ) -> Dict[str, Any]:
-    # Execute the command based on its type
-    handler = COMMAND_HANDLERS.get(command_type)
-    if not handler:
-        return {"status": "error", "detail": f"unknown command: {command_type}"}
+    # CRITICAL: Check for command conflicts first
+    conflict_ok, conflict_msg = check_command_conflicts(command_type)
+    if not conflict_ok:
+        return {"status": "error", "detail": f"Command conflict: {conflict_msg}"}
     
-    if command_type == "connect":
-        return await handler(start_telemetry_func, conn)
-    elif command_type == "disconnect":
-        return await handler(stop_telemetry_func, conn)
-    elif command_type == "reconnect":
-        return await handler(reconnect_telemetry_func)
-    elif command_type == "status":
-        return await handler(drone_connected)
-    elif command_type in ["arm", "disarm", "emergency_disarm", "sitl_setup", "land", "rtl", "mission_status"]:
-        return await handler(conn)
-    elif command_type == "takeoff":
-        # Handle takeoff with optional altitude parameter
-        altitude = 10.0  # default altitude
-        if payload and "altitude" in payload:
-            try:
-                altitude = float(payload["altitude"])
-            except (ValueError, TypeError):
-                return {"status": "error", "detail": "invalid altitude parameter"}
-        return await handler(conn, altitude)
-    elif command_type == "fly_timed":
-        # Handle timed flight with altitude and duration parameters
-        altitude = 5.0  # default altitude
-        duration = 5.0  # default duration
-        if payload:
-            try:
-                if "altitude" in payload:
+    # Track active command
+    _active_commands[command_type] = True
+    _last_command_time[command_type] = time.time()
+    
+    try:
+        # Execute the command based on its type
+        handler = COMMAND_HANDLERS.get(command_type)
+        if not handler:
+            return {"status": "error", "detail": f"unknown command: {command_type}"}
+        
+        if command_type == "connect":
+            result = await handler(start_telemetry_func, conn)
+        elif command_type == "disconnect":
+            result = await handler(stop_telemetry_func, conn)
+        elif command_type == "reconnect":
+            result = await handler(reconnect_telemetry_func)
+        elif command_type == "status":
+            result = await handler(drone_connected)
+        elif command_type in ["arm", "disarm", "emergency_disarm", "land", "rtl", "mission_status", "release_throttle", "emergency_land", "verify_home", "force_land_here"]:
+            result = await handler(conn)
+        elif command_type == "takeoff":
+            # Handle takeoff with optional altitude parameter
+            altitude = 10.0  # default altitude
+            if payload and "altitude" in payload:
+                try:
                     altitude = float(payload["altitude"])
-                if "duration" in payload:
-                    duration = float(payload["duration"])
-            except (ValueError, TypeError):
-                return {"status": "error", "detail": "invalid altitude or duration parameter"}
-        return await handler(conn, altitude, duration)
-    elif command_type == "message":
-        return await handler(payload, broadcast_func)
-    else:
-        return {"status": "error", "detail": f"handler not implemented for: {command_type}"}
+                except (ValueError, TypeError):
+                    return {"status": "error", "detail": "invalid altitude parameter"}
+            result = await handler(conn, altitude)
+        elif command_type == "fly_timed":
+            # Handle timed flight with altitude and duration parameters
+            altitude = 5.0  # default altitude
+            duration = 5.0  # default duration
+            if payload:
+                try:
+                    if "altitude" in payload:
+                        altitude = float(payload["altitude"])
+                    if "duration" in payload:
+                        duration = float(payload["duration"])
+                except (ValueError, TypeError):
+                    return {"status": "error", "detail": "invalid altitude or duration parameter"}
+            result = await handler(conn, altitude, duration)
+        elif command_type == "set_throttle":
+            # Handle throttle control with throttle percentage parameter
+            throttle_percent = 0.0  # default throttle
+            if payload and "throttle" in payload:
+                try:
+                    throttle_percent = float(payload["throttle"])
+                except (ValueError, TypeError):
+                    return {"status": "error", "detail": "invalid throttle parameter"}
+            result = await handler(conn, throttle_percent)
+        elif command_type == "message":
+            result = await handler(payload, broadcast_func)
+        else:
+            result = {"status": "error", "detail": f"handler not implemented for: {command_type}"}
+        
+        return result
+        
+    finally:
+        # Remove command from active tracking when done
+        _active_commands.pop(command_type, None)

@@ -2,14 +2,12 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 from dronekit import VehicleMode, LocationGlobalRelative
-from sitl_config import SITLConfig
 from safety_config import SafetyConfig, FlightLogger
 from typing import Optional, Dict, Any, Tuple
 
 class Controller:
     def __init__(self, connection):
         self.connection = connection
-        self.is_sitl = False  # Track if this is a SITL connection
         self.flight_logger = FlightLogger()
         self.flight_start_time = None
         self.home_location = None
@@ -85,49 +83,6 @@ class Controller:
         else:  # 3S battery (default)
             return SafetyConfig.MIN_BATTERY_VOLTAGE_3S
 
-    async def setup_sitl_connection(self, connection_string: str):
-        """Setup SITL-specific configuration after connection with enhanced safety."""
-        # CRITICAL SAFETY CHECK - verify this is actually SITL
-        is_safe, reason = SITLConfig.validate_sitl_safety(connection_string)
-        if not is_safe:
-            print(f"❌ SITL setup rejected: {reason}")
-            self.flight_logger.log_safety_violation("SITL_SETUP_REJECTED", {"connection": connection_string, "reason": reason})
-            return False
-        
-        if not self._vehicle_ready(require_armable=False):
-            return False
-            
-        vehicle = self.connection.vehicle
-        
-        try:
-            print(f"✅ SITL connection validated: {connection_string}")
-            print("Configuring SITL vehicle with safety parameters...")
-            
-            # Apply SITL-specific parameters safely
-            sitl_params = SITLConfig.get_sitl_parameters()
-            for param_name, param_value in sitl_params.items():
-                original_value = vehicle.parameters.get(param_name, "unknown")
-                print(f"Setting {param_name}: {original_value} → {param_value}")
-                vehicle.parameters[param_name] = param_value
-            
-            # Wait for parameters to be set
-            await asyncio.sleep(3)
-            
-            # Verify critical parameters were set
-            arming_check = vehicle.parameters.get('ARMING_CHECK', -1)
-            if arming_check != 0:
-                raise Exception(f"Failed to set ARMING_CHECK (got {arming_check}, expected 0)")
-                
-            print(f"✅ SITL parameters applied successfully")
-            self.is_sitl = True
-            self.flight_logger.log_safety_violation("SITL_CONFIGURED", {"connection": connection_string, "parameters": sitl_params})
-            return True
-            
-        except Exception as e:
-            print(f"❌ SITL setup failed: {e}")
-            self.flight_logger.log_safety_violation("SITL_SETUP_FAILED", {"connection": connection_string, "error": str(e)})
-            return False
-
     async def _wait_for_condition(self, check_fn, timeout, interval=0.5, desc="condition"):
         start = time.time()
         while not check_fn():
@@ -160,6 +115,11 @@ class Controller:
             if getattr(vehicle, "armed", False):
                 print("Vehicle is already armed.")
                 return True
+
+            # Perform pre-arm throttle safety check
+            if not await self.pre_arm_throttle_check():
+                print("❌ Pre-arm throttle check failed - ensure throttle is at minimum")
+                return False
 
             print("Arming vehicle...")
             vehicle.armed = True
@@ -198,7 +158,7 @@ class Controller:
             return False
 
     async def emergency_disarm(self):
-        """Emergency disarm - bypasses most safety checks for critical situations."""
+        """Emergency disarm - SMART emergency that considers altitude to prevent crashes."""
         if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
             print("Vehicle not connected - cannot emergency disarm.")
             return False
@@ -210,16 +170,124 @@ class Controller:
             return True
 
         try:
-            print("EMERGENCY DISARM - Forcing disarm...")
-            vehicle.armed = False
-            # Shorter timeout for emergency
-            if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 5.0, desc="emergency disarming"):
-                print("Emergency disarm timeout - vehicle may still be armed!")
-                return False
-            print("Emergency disarm successful.")
-            return True
+            # CHECK ALTITUDE FIRST - Don't kill drone in mid-air!
+            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+            
+            if current_alt > 2.0:  # If above 2m, emergency land instead!
+                print(f"🚨 HIGH ALTITUDE EMERGENCY ({current_alt:.1f}m) - EMERGENCY LANDING INSTEAD OF DISARM")
+                self.flight_logger.log_emergency("emergency_land_high_altitude", f"altitude_{current_alt:.1f}m")
+                return await self.emergency_land()
+            else:
+                print("🚨 LOW ALTITUDE EMERGENCY - Safe to disarm")
+                # Cut throttle first for safety
+                await self.set_throttle(0)
+                vehicle.armed = False
+                # Shorter timeout for emergency
+                if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 5.0, desc="emergency disarming"):
+                    print("Emergency disarm timeout - vehicle may still be armed!")
+                    return False
+                print("Emergency disarm successful.")
+                return True
         except Exception as e:
             print(f"Emergency disarm failed: {e}")
+            return False
+
+    async def set_throttle(self, throttle_percent: float):
+        """
+        Set throttle percentage for manual control during arming/flight.
+        Args:
+            throttle_percent: Throttle percentage (0-100)
+        """
+        if not self._vehicle_ready(require_armable=False):
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        try:
+            # Clamp throttle to safe range
+            throttle_percent = max(0, min(100, throttle_percent))
+            
+            # Convert percentage to PWM value (1000-2000 range)
+            throttle_pwm = int(1000 + (throttle_percent / 100.0) * 1000)
+            
+            print(f"Setting throttle to {throttle_percent}% (PWM: {throttle_pwm})")
+            
+            # Override throttle channel (channel 3 is typically throttle)
+            vehicle.channels.overrides = {'3': throttle_pwm}
+            
+            # Small delay to let the command take effect
+            await asyncio.sleep(0.1)
+            
+            # CRITICAL: Verify the override was actually set
+            current_overrides = getattr(vehicle.channels, 'overrides', {})
+            if '3' not in current_overrides or current_overrides['3'] != throttle_pwm:
+                print(f"⚠️ WARNING: Throttle override verification failed! Expected: {throttle_pwm}, Got: {current_overrides}")
+                return False
+            
+            print(f"✅ Throttle override confirmed: {throttle_percent}% (PWM: {throttle_pwm})")
+            return True
+        except Exception as e:
+            print(f"Failed to set throttle: {e}")
+            return False
+
+    async def release_throttle_control(self):
+        """Release manual throttle control back to autopilot."""
+        if not self._vehicle_ready(require_armable=False):
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        try:
+            print("Releasing throttle control to autopilot...")
+            # Clear channel overrides
+            vehicle.channels.overrides = {}
+            await asyncio.sleep(0.1)
+            
+            # CRITICAL: Verify overrides were actually cleared
+            current_overrides = getattr(vehicle.channels, 'overrides', {})
+            if '3' in current_overrides:
+                print(f"⚠️ WARNING: Throttle override NOT cleared! Still shows: {current_overrides}")
+                # Try again more aggressively
+                vehicle.channels.overrides = {'3': None}
+                await asyncio.sleep(0.1)
+                vehicle.channels.overrides = {}
+                await asyncio.sleep(0.1)
+                
+                # Final check
+                current_overrides = getattr(vehicle.channels, 'overrides', {})
+                if '3' in current_overrides:
+                    print(f"❌ CRITICAL: Could not clear throttle override! Manual control stuck!")
+                    return False
+            
+            print("✅ Throttle control released to autopilot")
+            return True
+        except Exception as e:
+            print(f"Failed to release throttle control: {e}")
+            return False
+
+    async def pre_arm_throttle_check(self):
+        """Perform throttle safety check before arming."""
+        if not self._vehicle_ready(require_armable=False):
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        try:
+            # Check if throttle is at safe level (should be low)
+            rc_channels = getattr(vehicle, "rc_channels", None)
+            if rc_channels:
+                throttle_channel = getattr(rc_channels, "throttle", None)
+                if throttle_channel is not None:
+                    # Throttle should be below 1100 PWM for safe arming
+                    if throttle_channel > 1100:
+                        print(f"⚠️ Throttle too high for arming: {throttle_channel} PWM (should be < 1100)")
+                        return False
+                    else:
+                        print(f"✅ Throttle at safe level: {throttle_channel} PWM")
+            
+            return True
+        except Exception as e:
+            print(f"Throttle check failed: {e}")
             return False
 
     async def takeoff(self, altitude, *, wait_timeout=30.0):
@@ -246,6 +314,40 @@ class Controller:
         if getattr(vehicle.mode, "name", None) != "GUIDED":
             print("Vehicle must be in GUIDED mode for takeoff.")
             return False
+        
+        # CRITICAL: Enhanced pre-flight safety checks
+        try:
+            # Check GPS integrity
+            gps = getattr(vehicle, "gps_0", None)
+            if gps:
+                gps_data = {
+                    'eph': getattr(gps, 'eph', 999),
+                    'groundspeed': getattr(vehicle, 'groundspeed', 0)
+                }
+                gps_ok, gps_msg = SafetyConfig.validate_gps_integrity(gps_data)
+                if not gps_ok:
+                    print(f"❌ GPS integrity check failed: {gps_msg}")
+                    return False
+            
+            # Check battery under load (if possible)
+            battery = getattr(vehicle, "battery", None)
+            if battery and hasattr(battery, 'voltage'):
+                voltage = battery.voltage
+                # Simple under-load test - check voltage doesn't drop too much during arming
+                if voltage < self._get_min_battery_voltage(voltage) + 0.3:  # Extra 0.3V margin
+                    print(f"❌ Battery voltage too close to minimum for safe takeoff: {voltage}V")
+                    return False
+            
+            # Verify home position is set
+            home = getattr(vehicle, "home_location", None)
+            if not home or (home.lat == 0.0 and home.lon == 0.0):
+                print("⚠️ Warning: Home position not set - RTL may not work properly")
+            
+            print("✅ Pre-flight safety checks passed")
+            
+        except Exception as e:
+            print(f"⚠️ Pre-flight safety check error: {e}")
+            # Continue with takeoff but log the issue
             
         try:
             print(f"Taking off to {altitude}m altitude...")
@@ -273,8 +375,13 @@ class Controller:
             print(f"Takeoff failed: {e}")
             return False
 
-    async def land(self, *, wait_timeout=60.0):
-        """Safely land the vehicle at current location."""
+    async def land(self, *, wait_timeout=60.0, force_land_here=False):
+        """Safely land the vehicle - defaults to RTL for safety unless forced.
+        
+        Args:
+            wait_timeout: Maximum time to wait for landing completion
+            force_land_here: If True, land at current location instead of RTL (DANGEROUS!)
+        """
         if not self._vehicle_ready(require_armable=False):
             return False
             
@@ -285,10 +392,18 @@ class Controller:
         if current_alt < 1.0:  # Already on ground
             print("Vehicle already on ground.")
             return True
+        
+        # SAFETY DECISION: RTL is safer than landing at unknown location
+        if not force_land_here:
+            print("🏠 SAFETY MODE: Using RTL instead of landing here (safer return to launch)")
+            return await self.rtl(wait_timeout=wait_timeout)
+        else:
+            print("⚠️ FORCED LAND HERE - Landing at current location (potentially dangerous!)")
+            self.flight_logger.log_emergency("forced_land_here", f"altitude_{current_alt:.1f}m")
             
         try:
-            print("Landing vehicle...")
-            self.flight_logger.log_landing({"altitude": current_alt})
+            print("Landing vehicle at current location...")
+            self.flight_logger.log_landing({"altitude": current_alt, "forced": force_land_here})
             
             # Set mode to LAND
             vehicle.mode = VehicleMode("LAND")
@@ -329,7 +444,14 @@ class Controller:
         vehicle = self.connection.vehicle
         
         try:
-            print("Returning to launch (RTL)...")
+            # CRITICAL: Validate home position is set before RTL
+            home = getattr(vehicle, "home_location", None)
+            if not home or (home.lat == 0.0 and home.lon == 0.0):
+                print("❌ HOME POSITION NOT SET! RTL would fail - using emergency land instead")
+                self.flight_logger.log_emergency("rtl_no_home", "home_position_invalid")
+                return await self.emergency_land()
+            
+            print(f"Returning to launch (RTL) - Home: {home.lat:.6f}, {home.lon:.6f}")
             self.flight_logger.log_rtl("manual_command")
             
             # Set mode to RTL
@@ -340,8 +462,8 @@ class Controller:
                 lambda: getattr(vehicle.mode, "name", None) == "RTL", 
                 10.0, desc="RTL mode"
             ):
-                print("Failed to set RTL mode.")
-                return False
+                print("Failed to set RTL mode - trying emergency land")
+                return await self.emergency_land()
                 
             print("RTL mode engaged - returning to launch point...")
                 
@@ -473,6 +595,116 @@ class Controller:
             print(f"❌ Emergency disarm failed: {e}")
             self.flight_logger.log_emergency("emergency_disarm_failed", str(e))
             return False
+
+    async def emergency_land(self):
+        """Emergency land - SMART emergency that tries RTL first if possible."""
+        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
+            print("❌ Vehicle not connected - cannot emergency land.")
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        try:
+            print("🚨 EMERGENCY LAND INITIATED 🚨")
+            self.flight_logger.log_emergency("emergency_land", "critical_situation")
+            
+            # SMART EMERGENCY: Try RTL first if home is valid (safer)
+            home = getattr(vehicle, "home_location", None)
+            if home and not (home.lat == 0.0 and home.lon == 0.0):
+                print("🏠 Emergency RTL - returning to safe launch location")
+                return await self.rtl(wait_timeout=60.0)
+            else:
+                print("⚠️ No valid home - forced to land at current location")
+                return await self.land(force_land_here=True, wait_timeout=30.0)
+            
+        except Exception as e:
+            print(f"❌ Emergency land failed: {e}")
+            self.flight_logger.log_emergency("emergency_land_failed", str(e))
+            return False
+
+    async def force_land_here(self, *, wait_timeout=30.0):
+        """Force immediate landing at current location - USE ONLY IN EMERGENCIES!"""
+        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
+            print("❌ Vehicle not connected - cannot force land.")
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        try:
+            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+            print(f"🚨 FORCE LAND HERE - EMERGENCY LANDING AT CURRENT LOCATION ({current_alt:.1f}m)")
+            self.flight_logger.log_emergency("force_land_here", f"altitude_{current_alt:.1f}m")
+            
+            # Force LAND mode immediately
+            vehicle.mode = VehicleMode("LAND")
+            
+            # Don't wait long for mode change in emergency
+            if not await self._wait_for_condition(
+                lambda: getattr(vehicle.mode, "name", None) == "LAND", 
+                5.0, desc="emergency LAND mode"
+            ):
+                print("⚠️ Failed to set LAND mode - trying throttle cut")
+                await self.set_throttle(0)  # Cut throttle as backup
+                return False
+                
+            print("🚨 Emergency landing in progress...")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Force land failed: {e}")
+            self.flight_logger.log_emergency("force_land_failed", str(e))
+            return False
+
+    def verify_home_location(self) -> tuple[bool, str]:
+        """Verify home location is valid and accurately set."""
+        if not self._vehicle_ready(require_armable=False):
+            return False, "Vehicle not ready"
+            
+        vehicle = self.connection.vehicle
+        home = getattr(vehicle, "home_location", None)
+        
+        if not home:
+            return False, "Home location not set - arm drone first to set home"
+        
+        if home.lat == 0.0 and home.lon == 0.0:
+            return False, "Home location invalid (0,0) - ensure GPS lock before arming"
+        
+        # Check if home is within reasonable bounds
+        if abs(home.lat) > 90 or abs(home.lon) > 180:
+            return False, f"Home location out of bounds: {home.lat:.6f}, {home.lon:.6f}"
+        
+        # Check GPS accuracy when home was set
+        gps = getattr(vehicle, "gps_0", None)
+        if gps:
+            eph = getattr(gps, 'eph', 999)
+            if eph > 5.0:  # More than 5m accuracy error
+                return False, f"Home location may be inaccurate - GPS accuracy: {eph}m"
+        
+        return True, f"Home location valid: {home.lat:.6f}, {home.lon:.6f}"
+
+    def get_home_distance(self) -> Optional[float]:
+        """Calculate distance from current position to home (in meters)."""
+        if not self._vehicle_ready(require_armable=False):
+            return None
+            
+        vehicle = self.connection.vehicle
+        home = getattr(vehicle, "home_location", None)
+        current_loc = getattr(vehicle.location, "global_frame", None)
+        
+        if not home or not current_loc:
+            return None
+            
+        # Simple distance calculation (approximate for small distances)
+        import math
+        lat_diff = math.radians(current_loc.lat - home.lat)
+        lon_diff = math.radians(current_loc.lon - home.lon)
+        
+        a = (math.sin(lat_diff/2)**2 + 
+             math.cos(math.radians(home.lat)) * math.cos(math.radians(current_loc.lat)) * 
+             math.sin(lon_diff/2)**2)
+        
+        distance = 6371000 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))  # Earth radius in meters
+        return distance
 
     def get_mission_status(self) -> Optional[Dict[str, Any]]:
         """Get current mission status if any mission is active."""
