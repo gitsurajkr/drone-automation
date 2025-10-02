@@ -48,12 +48,35 @@ export interface DroneLog {
   type: "telemetry" | "command" | "system"
 }
 
+export interface BatteryEmergency {
+  isActive: boolean
+  batteryLevel: number
+  distanceToHome?: number
+  altitude: number
+  gpsfix: number
+  recommendation: string
+  reason: string
+  timeoutSeconds: number
+  promptId: string
+}
+
 export function useDroneData() {
   const [droneData, setDroneData] = useState<DroneData | null>(null)
   const [alerts, setAlerts] = useState<DroneAlert[]>([])
   const [logs, setLogs] = useState<DroneLog[]>([])
   const [isConnected, setIsConnected] = useState(false)
   const [telemetryHistory, setTelemetryHistory] = useState<DroneData[]>([])
+  const [batteryEmergency, setBatteryEmergency] = useState<BatteryEmergency>({
+    isActive: false,
+    batteryLevel: 0,
+    distanceToHome: undefined,
+    altitude: 0,
+    gpsfix: 0,
+    recommendation: '',
+    reason: '',
+    timeoutSeconds: 10,
+    promptId: ''
+  })
   const wsRef = useRef<WebSocket | null>(null)
   const pendingRef = useRef<Map<string, { resolve: (value?: any) => void, reject: (err?: any) => void }>>(new Map())
 
@@ -165,6 +188,36 @@ export function useDroneData() {
           } else if (msg.event_type === "ALERT") {
             setAlerts((prev) => [...prev.slice(-9), msg.payload]);
             toast.error(msg.payload.message);
+          } else if (msg.type === "battery_emergency") {
+            console.log("🚨 Battery emergency received:", msg);
+            // Wait for the prompt ID in the next message
+            setBatteryEmergency({
+              isActive: true,
+              batteryLevel: msg.battery_level,
+              distanceToHome: msg.distance_to_home,
+              altitude: msg.altitude,
+              gpsfix: msg.gps_fix,
+              recommendation: msg.recommendation,
+              reason: msg.reason,
+              timeoutSeconds: msg.timeout_seconds,
+              promptId: '' // Will be set by battery_emergency_prompt message
+            });
+          } else if (msg.type === "battery_emergency_prompt") {
+            console.log("📡 Battery emergency prompt ID received:", msg.prompt_id);
+            setBatteryEmergency(prev => ({
+              ...prev,
+              promptId: msg.prompt_id
+            }));
+          } else if (msg.type === "battery_emergency_countdown") {
+            console.log("⏰ Battery emergency countdown:", msg.remaining_seconds);
+            // Frontend handles its own countdown, but we can log this
+          } else if (msg.type === "battery_emergency_action") {
+            console.log("✅ Battery emergency action taken:", msg.action);
+            setBatteryEmergency(prev => ({
+              ...prev,
+              isActive: false
+            }));
+            toast.success(`Emergency action: ${msg.action}`);
           }
           setLogs((prev) => [
             ...prev.slice(-99),
@@ -223,6 +276,31 @@ export function useDroneData() {
   };
 
 
+  // Handle battery emergency choice
+  const handleBatteryEmergencyChoice = async (choice: 'RTL' | 'LAND') => {
+    console.log(`🔄 Sending battery emergency response: ${choice} for prompt ${batteryEmergency.promptId}`);
+
+    try {
+      await sendCommand('battery_emergency_response', {
+        prompt_id: batteryEmergency.promptId,
+        choice: choice
+      });
+
+      console.log(`✅ Battery emergency response sent: ${choice}`);
+
+      // Close the modal immediately after sending response
+      setBatteryEmergency(prev => ({
+        ...prev,
+        isActive: false
+      }));
+
+      toast.success(`Emergency choice sent: ${choice}`);
+    } catch (error) {
+      console.error('❌ Failed to send battery emergency response:', error);
+      toast.error('Failed to send emergency response');
+    }
+  };
+
   // For unimplemented features (ARM, DISARM, etc.)
   const notImplemented = (feature: string) => {
     toast("Not implemented: " + feature);
@@ -238,7 +316,9 @@ export function useDroneData() {
     logs,
     isConnected,
     telemetryHistory,
+    batteryEmergency,
     sendCommand,
+    handleBatteryEmergencyChoice,
     notImplemented,
   }
 }

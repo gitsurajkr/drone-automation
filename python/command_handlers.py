@@ -65,7 +65,7 @@ async def handle_arm(conn) -> Dict[str, Any]:
         return {"status": "error", "detail": f"arm exception: {e}"}
 
 
-async def handle_arm_and_takeoff(conn, altitude: float = 5.0) -> Dict[str, Any]:
+async def handle_arm_and_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
     """Handle arm and takeoff command to prevent auto-disarm timeout."""
     controller = getattr(conn, "controller", None)
     if controller is None:
@@ -126,16 +126,28 @@ async def handle_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
         return {"status": "error", "detail": f"takeoff exception: {e}"}
 
 
-async def handle_land(conn) -> Dict[str, Any]:
+async def handle_land(conn, payload: dict = None) -> Dict[str, Any]:
     """Handle land command - defaults to RTL for safety."""
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
     
     try:
-        result = await controller.land()  # Now defaults to RTL for safety
+        # Check for emergency parameters
+        force_land_here = False
+        emergency_override = False
+        
+        if payload:
+            force_land_here = payload.get("force_land_here", False)
+            emergency_override = payload.get("emergency_override", False)
+            
+        if emergency_override:
+            print("⚠️ LAND with emergency override enabled")
+            
+        result = await controller.land(force_land_here=force_land_here, emergency_override=emergency_override)
+        action = "emergency landing" if force_land_here and emergency_override else "landing/RTL"
         return {"status": "ok" if result else "error", 
-                "detail": "landing/RTL successful" if result else "landing/RTL failed"}
+                "detail": f"{action} successful" if result else f"{action} failed"}
     except Exception as e:
         return {"status": "error", "detail": f"landing exception: {e}"}
 
@@ -167,34 +179,40 @@ async def handle_emergency_disarm(conn) -> Dict[str, Any]:
         return {"status": "error", "detail": f"emergency disarm exception: {e}"}
 
 
-async def handle_rtl(conn) -> Dict[str, Any]:
+async def handle_rtl(conn, payload: dict = None) -> Dict[str, Any]:
     """Handle return to launch command - return home and land."""
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
     
     try:
-        result = await controller.rtl()
+        # Check for emergency override
+        emergency_override = False
+        if payload and payload.get("emergency_override"):
+            emergency_override = True
+            print("⚠️ RTL with emergency override enabled")
+        
+        result = await controller.rtl(emergency_override=emergency_override)
         return {"status": "ok" if result else "error", 
                 "detail": "return to launch successful" if result else "return to launch failed"}
     except Exception as e:
         return {"status": "error", "detail": f"RTL exception: {e}"}
 
 
-async def handle_fly_timed(conn, altitude: float = 5.0, duration: float = 5.0) -> Dict[str, Any]:
+async def handle_fly_timed(conn, altitude: float = 10.0, duration: float = 30.0, broadcast_func=None) -> Dict[str, Any]:
     """Handle timed flight mission - fly at altitude for duration then RTL."""
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
     
     try:
-        # Validate parameters
-        if altitude <= 0 or altitude > 30:
-            return {"status": "error", "detail": f"altitude must be between 0 and 30m (got {altitude}m)"}
-        if duration <= 0 or duration > 300:
-            return {"status": "error", "detail": f"duration must be between 0 and 300s (got {duration}s)"}
+        # Validate parameters - use SafetyConfig limits for consistency
+        if altitude <= 0 or altitude > 50:
+            return {"status": "error", "detail": f"altitude must be between 0 and 50m (got {altitude}m)"}
+        if duration <= 0 or duration > 600:
+            return {"status": "error", "detail": f"duration must be between 0 and 600s (got {duration}s)"}
             
-        result = await controller.fly_timed_mission(altitude, duration)
+        result = await controller.fly_timed_mission(altitude, duration, broadcast_func)
         return {"status": "ok" if result else "error", 
                 "detail": f"timed flight mission ({altitude}m for {duration}s) successful" if result else "timed flight mission failed"}
     except Exception as e:
@@ -285,6 +303,32 @@ async def handle_verify_home(conn) -> Dict[str, Any]:
         return {"status": "error", "detail": f"home verification exception: {e}"}
 
 
+async def handle_battery_emergency_response(conn, payload: dict) -> Dict[str, Any]:
+    """Handle user response to battery emergency prompt."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Extract from nested payload structure
+        nested_payload = payload.get('payload', payload)
+        prompt_id = nested_payload.get("prompt_id", "")
+        choice = nested_payload.get("choice", "").upper()
+        
+        print(f"🔄 Battery emergency response: prompt_id={prompt_id}, choice={choice}")
+        
+        if not prompt_id:
+            return {"status": "error", "detail": "missing prompt_id"}
+        if choice not in ["RTL", "LAND"]:
+            return {"status": "error", "detail": "invalid choice - must be RTL or LAND"}
+        
+        success = controller.handle_battery_emergency_response(prompt_id, choice)
+        return {"status": "ok" if success else "error", 
+                "detail": f"emergency response '{choice}' recorded" if success else "failed to record emergency response (possibly expired)"}
+    except Exception as e:
+        return {"status": "error", "detail": f"battery emergency response exception: {e}"}
+
+
 # Command registry - maps command types to their handlers
 COMMAND_HANDLERS = {
     "connect": handle_connect,
@@ -306,6 +350,7 @@ COMMAND_HANDLERS = {
     "emergency_land": handle_emergency_land,
     "verify_home": handle_verify_home,
     "force_land_here": handle_force_land_here,
+    "battery_emergency_response": handle_battery_emergency_response,
 }
 
 
@@ -377,8 +422,14 @@ async def execute_command(
             result = await handler(reconnect_telemetry_func)
         elif command_type == "status":
             result = await handler(drone_connected)
-        elif command_type in ["arm", "disarm", "emergency_disarm", "land", "rtl", "mission_status", "release_throttle", "emergency_land", "verify_home", "force_land_here"]:
+        elif command_type in ["arm", "disarm", "emergency_disarm", "mission_status", "release_throttle", "emergency_land", "verify_home", "force_land_here"]:
             result = await handler(conn)
+        elif command_type in ["land", "rtl"]:
+            # Handle land and rtl with optional payload for emergency override
+            result = await handler(conn, payload)
+        elif command_type == "battery_emergency_response":
+            # Handle battery emergency response with payload
+            result = await handler(conn, payload)
         elif command_type == "arm_and_takeoff":
             # Handle arm + takeoff with optional altitude parameter
             altitude = 5.0  # default altitude
@@ -409,7 +460,7 @@ async def execute_command(
                         duration = float(payload["duration"])
                 except (ValueError, TypeError):
                     return {"status": "error", "detail": "invalid altitude or duration parameter"}
-            result = await handler(conn, altitude, duration)
+            result = await handler(conn, altitude, duration, broadcast_func)
         elif command_type == "set_throttle":
             # Handle throttle control with throttle percentage parameter
             throttle_percent = 0.0  # default throttle

@@ -6,11 +6,11 @@ import logging
 class SafetyConfig:
     """Comprehensive safety configuration for drone operations."""
     
-    # Flight limits
-    MAX_ALTITUDE = 30.0         # meters - conservative limit
+    # Flight limits - Updated for more practical operations
+    MAX_ALTITUDE = 50.0         # meters - increased for better testing
     MIN_ALTITUDE = 0.5          # meters - minimum takeoff height
-    MAX_FLIGHT_TIME = 300       # seconds - 5 minutes max flight
-    MAX_HORIZONTAL_DISTANCE = 100  # meters from home
+    MAX_FLIGHT_TIME = 600       # seconds - 10 minutes max flight
+    MAX_HORIZONTAL_DISTANCE = 200  # meters from home - increased range
     
     # Battery safety - UPDATED FOR REAL DRONE PROTECTION
     MIN_BATTERY_VOLTAGE_3S = 11.1   # volts for 3S LiPo (3.7V per cell - SAFE)

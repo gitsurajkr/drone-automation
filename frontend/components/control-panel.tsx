@@ -184,15 +184,39 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
             {localArmed ? "DISARM" : "ARM"}
           </Button>
 
-          <Button
-            onClick={() => handleCommandAsync("arm_and_takeoff", { altitude: 5.0 })}
-            disabled={connProcessing || !droneConnected || localArmed}
-            variant="default"
-            className="bg-blue-600 hover:bg-blue-700"
-            title="Arm drone and immediately takeoff to prevent auto-disarm timeout"
-          >
-            🚁 ARM + TAKEOFF
-          </Button>
+          <div className="space-y-2">
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <label className="text-xs text-muted-foreground">Takeoff Altitude (m)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  defaultValue="10"
+                  step="0.5"
+                  className="w-full px-2 py-1 text-sm border rounded"
+                  id="takeoff-altitude"
+                  placeholder="1-50m"
+                />
+              </div>
+              <Button
+                onClick={() => {
+                  const altitude = parseFloat((document.getElementById('takeoff-altitude') as HTMLInputElement)?.value || '10')
+                  if (altitude < 1 || altitude > 50) {
+                    toast.error(`Takeoff altitude must be between 1-50m (got ${altitude}m)`)
+                    return
+                  }
+                  handleCommandAsync("arm_and_takeoff", { altitude })
+                }}
+                disabled={connProcessing || !droneConnected || localArmed}
+                variant="default"
+                className="bg-blue-600 hover:bg-blue-700"
+                title="Arm drone and immediately takeoff to prevent auto-disarm timeout"
+              >
+                🚁 ARM + TAKEOFF
+              </Button>
+            </div>
+          </div>
 
           <Button
             onClick={() => handleCommandAsync("emergency_disarm")}
@@ -283,13 +307,33 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
         {/* Flight Controls */}
         <div className="space-y-2">
           <div className="flex gap-2 flex-wrap">
-            <Button
-              variant="default"
-              onClick={() => handleCommandAsync("takeoff")}
-              disabled={connProcessing || pythonConnected !== true || !localArmed}
-            >
-              ✈️ Takeoff
-            </Button>
+            <div className="flex gap-2 items-center">
+              <input
+                type="number"
+                min="1"
+                max="50"
+                defaultValue="10"
+                step="0.5"
+                className="w-16 px-1 py-1 text-xs border rounded"
+                id="manual-takeoff-altitude"
+                placeholder="10m"
+              />
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => {
+                  const altitude = parseFloat((document.getElementById('manual-takeoff-altitude') as HTMLInputElement)?.value || '10')
+                  if (altitude < 1 || altitude > 50) {
+                    toast.error(`Altitude must be 1-50m (got ${altitude}m)`)
+                    return
+                  }
+                  handleCommandAsync("takeoff", { altitude })
+                }}
+                disabled={connProcessing || pythonConnected !== true || !localArmed}
+              >
+                ✈️ Takeoff
+              </Button>
+            </div>
             <Button
               variant="outline"
               onClick={() => handleCommandAsync("land")}
@@ -334,46 +378,106 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
           </div>
         </div>
 
-        {/* Timed Flight Mission */}
-        <div className="space-y-2 border-t pt-4">
-          <p className="text-sm font-medium">Timed Flight Mission</p>
-          <div className="grid grid-cols-2 gap-2">
+        {/* Timed Flight Mission - Enhanced Manual Control */}
+        <div className="space-y-3 border-t pt-4">
+          <p className="text-sm font-medium">🎯 Timed Flight Mission</p>
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-muted-foreground">Altitude (m)</label>
               <input
                 type="number"
                 min="1"
-                max="30"
-                defaultValue="5"
-                className="w-full px-2 py-1 text-sm border rounded"
+                max="50"
+                defaultValue="10"
+                step="0.5"
+                className="w-full px-2 py-1 text-sm border rounded focus:ring-2 focus:ring-blue-500"
                 id="mission-altitude"
+                placeholder="1-50m"
               />
+              <span className="text-xs text-gray-500">Max: 50m</span>
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Duration (s)</label>
               <input
                 type="number"
-                min="1"
-                max="300"
-                defaultValue="5"
-                className="w-full px-2 py-1 text-sm border rounded"
+                min="5"
+                max="600"
+                defaultValue="30"
+                step="5"
+                className="w-full px-2 py-1 text-sm border rounded focus:ring-2 focus:ring-blue-500"
                 id="mission-duration"
+                placeholder="5-600s"
               />
+              <span className="text-xs text-gray-500">Max: 10min</span>
             </div>
           </div>
+
+          {/* Quick Preset Buttons */}
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                (document.getElementById('mission-altitude') as HTMLInputElement).value = '5';
+                (document.getElementById('mission-duration') as HTMLInputElement).value = '15';
+              }}
+              className="py-1 text-xs"
+            >
+              Quick Test<br />5m • 15s
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                (document.getElementById('mission-altitude') as HTMLInputElement).value = '15';
+                (document.getElementById('mission-duration') as HTMLInputElement).value = '60';
+              }}
+              className="py-1 text-xs"
+            >
+              Standard<br />15m • 1min
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                (document.getElementById('mission-altitude') as HTMLInputElement).value = '25';
+                (document.getElementById('mission-duration') as HTMLInputElement).value = '120';
+              }}
+              className="py-1 text-xs"
+            >
+              Extended<br />25m • 2min
+            </Button>
+          </div>
+
           <Button
             variant="default"
             size="sm"
             onClick={() => {
-              const altitude = parseFloat((document.getElementById('mission-altitude') as HTMLInputElement)?.value || '5')
-              const duration = parseFloat((document.getElementById('mission-duration') as HTMLInputElement)?.value || '5')
+              const altitude = parseFloat((document.getElementById('mission-altitude') as HTMLInputElement)?.value || '10')
+              const duration = parseFloat((document.getElementById('mission-duration') as HTMLInputElement)?.value || '30')
+
+              // Validation feedback
+              if (altitude < 1 || altitude > 50) {
+                toast.error(`Altitude must be between 1-50m (got ${altitude}m)`)
+                return
+              }
+              if (duration < 5 || duration > 600) {
+                toast.error(`Duration must be between 5-600s (got ${duration}s)`)
+                return
+              }
+
+              toast.success(`Starting mission: ${altitude}m for ${duration}s`)
               handleCommandAsync("fly_timed", { altitude, duration })
             }}
             disabled={connProcessing || pythonConnected !== true || !localArmed}
-            className="w-full"
+            className="w-full bg-blue-600 hover:bg-blue-700"
           >
             🚁 Start Timed Mission
           </Button>
+
+          <div className="text-xs text-blue-600 bg-blue-50 p-2 rounded">
+            💡 Mission will monitor battery and trigger emergency at 30%
+          </div>
         </div>
 
         {/* Flight info */}

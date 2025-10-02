@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from datetime import datetime, timedelta
 from dronekit import VehicleMode, LocationGlobalRelative
@@ -13,7 +14,7 @@ class Controller:
         self.home_location = None
         self.current_mission = None
 
-    def _vehicle_ready(self, require_armable=True):
+    def _vehicle_ready(self, require_armable=True, emergency_override=False):
         
         # check vehicle connectivity
         if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
@@ -49,21 +50,29 @@ class Controller:
                 print(f"Not enough GPS satellites ({satellites}, need ≥{SafetyConfig.MIN_GPS_SATELLITES}).")
                 return False
 
-        # Battery check with configurable limits
-        battery = getattr(vehicle, "battery", None)
-        if battery is not None:
-            batt_level = getattr(battery, "level", None)
-            if batt_level is not None and batt_level < SafetyConfig.MIN_BATTERY_LEVEL:
-                print(f"Battery level too low ({batt_level}%, need ≥{SafetyConfig.MIN_BATTERY_LEVEL}%).")
-                return False
-            
-            # Check battery voltage with better detection
-            voltage = getattr(battery, "voltage", None)
-            if voltage is not None:
-                min_voltage = self._get_min_battery_voltage(voltage)
-                if voltage < min_voltage:
-                    print(f"Battery voltage too low ({voltage}V, need ≥{min_voltage}V).")
+        # Battery check with configurable limits (skip during emergency override)
+        if not emergency_override:
+            battery = getattr(vehicle, "battery", None)
+            if battery is not None:
+                batt_level = getattr(battery, "level", None)
+                if batt_level is not None and batt_level < SafetyConfig.MIN_BATTERY_LEVEL:
+                    print(f"Battery level too low ({batt_level}%, need ≥{SafetyConfig.MIN_BATTERY_LEVEL}%).")
                     return False
+                
+                # Check battery voltage with better detection
+                voltage = getattr(battery, "voltage", None)
+                if voltage is not None:
+                    min_voltage = self._get_min_battery_voltage(voltage)
+                    if voltage < min_voltage:
+                        print(f"Battery voltage too low ({voltage}V, need ≥{min_voltage}V).")
+                        return False
+        else:
+            # Log emergency override usage
+            battery = getattr(vehicle, "battery", None)
+            if battery is not None:
+                batt_level = getattr(battery, "level", None)
+                if batt_level is not None:
+                    print(f"⚠️ EMERGENCY OVERRIDE: Bypassing battery safety check ({batt_level}%)")
 
         # Check system status if available
         if hasattr(vehicle, 'system_status'):
@@ -192,42 +201,7 @@ class Controller:
             print(f"[DISARM] FAILED - Exception: {e}")
             return False
 
-    async def emergency_disarm(self):
-        """Emergency disarm - SMART emergency that considers altitude to prevent crashes."""
-        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
-            print("Vehicle not connected - cannot emergency disarm.")
-            return False
-            
-        vehicle = self.connection.vehicle
-        
-        if not getattr(vehicle, "armed", False):
-            print("Vehicle already disarmed.")
-            return True
 
-        try:
-            # CHECK ALTITUDE FIRST - Don't kill drone in mid-air!
-            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
-            print(f"[EMERGENCY] Current altitude: {current_alt:.1f}m")
-            
-            if current_alt > 2.0:  # If above 2m, emergency land instead!
-                print(f"[EMERGENCY] HIGH ALTITUDE - Emergency landing instead of disarm")
-                self.flight_logger.log_emergency("emergency_land_high_altitude", f"altitude_{current_alt:.1f}m")
-                return await self.emergency_land()
-            else:
-                print("[EMERGENCY] LOW ALTITUDE - Safe to disarm")
-                # Cut throttle first for safety
-                await self.set_throttle(0)
-                print("[EMERGENCY] Cutting power")
-                vehicle.armed = False
-                # Shorter timeout for emergency
-                if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 5.0, desc="emergency disarming"):
-                    print("[EMERGENCY] TIMEOUT - Vehicle may still be armed")
-                    return False
-                print("[EMERGENCY] SUCCESS - Vehicle disarmed")
-                return True
-        except Exception as e:
-            print(f"Emergency disarm failed: {e}")
-            return False
 
     async def set_throttle(self, throttle_percent: float):
         """
@@ -480,14 +454,15 @@ class Controller:
             print(f"[ARM+TAKEOFF] FAILED - Exception: {e}")
             return False
 
-    async def land(self, *, wait_timeout=60.0, force_land_here=False):
+    async def land(self, *, wait_timeout=60.0, force_land_here=False, emergency_override=False):
         """Safely land the vehicle - defaults to RTL for safety unless forced.
         
         Args:
             wait_timeout: Maximum time to wait for landing completion
             force_land_here: If True, land at current location instead of RTL (DANGEROUS!)
+            emergency_override: If True, bypass battery safety checks for emergency situations
         """
-        if not self._vehicle_ready(require_armable=False):
+        if not self._vehicle_ready(require_armable=False, emergency_override=emergency_override):
             return False
             
         vehicle = self.connection.vehicle
@@ -553,9 +528,9 @@ class Controller:
             print(f"Landing failed: {e}")
             return False
 
-    async def rtl(self, *, wait_timeout=120.0):
+    async def rtl(self, *, wait_timeout=120.0, emergency_override=False):
         """Return to Launch (RTL) - return to home position and land."""
-        if not self._vehicle_ready(require_armable=False):
+        if not self._vehicle_ready(require_armable=False, emergency_override=emergency_override):
             return False
             
         vehicle = self.connection.vehicle
@@ -615,7 +590,7 @@ class Controller:
             print(f"RTL failed: {e}")
             return False
 
-    async def fly_timed_mission(self, altitude: float, duration: float) -> bool:
+    async def fly_timed_mission(self, altitude: float, duration: float, broadcast_func=None) -> bool:
         """
         Fly at specified altitude for specified duration then RTL.
         
@@ -662,16 +637,35 @@ class Controller:
                 print("[MISSION] FAILED - Takeoff unsuccessful")
                 return False
                 
-            # Step 2: Hold position for specified duration
+            # Step 2: Hold position for specified duration with battery monitoring
             print(f"[MISSION] Holding position for {duration} seconds")
             mission_start = datetime.now()
             last_log_time = 0
+            battery_emergency_triggered = False
             
             while (datetime.now() - mission_start).total_seconds() < duration:
                 # Monitor vehicle status during mission
                 if not getattr(vehicle, "armed", False):
                     print("[MISSION] INTERRUPTED - Vehicle disarmed")
                     break
+                    
+                # Critical battery monitoring during mission
+                battery = getattr(vehicle, "battery", None)
+                battery_level = getattr(battery, "level", None) if battery else None
+                
+                if (battery_level is not None and battery_level <= 30 and 
+                    not battery_emergency_triggered and broadcast_func):
+                    print(f"🚨 CRITICAL BATTERY DETECTED: {battery_level}% - Triggering emergency handling")
+                    battery_emergency_triggered = True
+                    
+                    # Handle battery emergency with user choice
+                    emergency_result = await self.handle_battery_emergency(broadcast_func)
+                    print(f"🚨 Emergency action completed: {emergency_result}")
+                    
+                    # Mission ends here regardless of choice
+                    print("[MISSION] TERMINATED - Battery emergency handled")
+                    self.current_mission = None
+                    return emergency_result.startswith(('rtl', 'land', 'timeout_rtl'))
                     
                 current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
                 elapsed = (datetime.now() - mission_start).total_seconds()
@@ -680,18 +674,37 @@ class Controller:
                 # Log every 10 seconds
                 if elapsed - last_log_time >= 10:
                     progress_percent = int((elapsed / duration) * 100)
-                    print(f"[MISSION] Progress: {progress_percent}% | Altitude: {current_alt:.1f}m | Remaining: {remaining_time:.0f}s")
+                    battery_info = f" | Battery: {battery_level}%" if battery_level is not None else ""
+                    print(f"[MISSION] Progress: {progress_percent}% | Altitude: {current_alt:.1f}m | Remaining: {remaining_time:.0f}s{battery_info}")
                     last_log_time = elapsed
                 
                 await asyncio.sleep(1)
             
+            # Step 3: Return to Launch with enhanced battery safety handling
             print("[MISSION] Flight duration complete - returning to launch")
+            battery = getattr(vehicle, "battery", None)
+            battery_level = getattr(battery, "level", None) if battery else None
             
-            # Step 3: Return to Launch
+            # Check if we need emergency handling before RTL
+            if (battery_level is not None and battery_level <= 30 and 
+                not battery_emergency_triggered and broadcast_func):
+                print(f"🚨 CRITICAL BATTERY BEFORE RTL: {battery_level}% - Triggering emergency handling")
+                emergency_result = await self.handle_battery_emergency(broadcast_func)
+                print(f"🚨 Emergency action completed: {emergency_result}")
+                self.current_mission = None
+                return emergency_result.startswith(('rtl', 'land', 'timeout_rtl'))
+            
+            # Normal RTL with fallback
             if not await self.rtl():
                 print("[MISSION] RTL failed - attempting emergency landing")
-                await self.land()
-                return False
+                if battery_level is not None and battery_level < SafetyConfig.MIN_BATTERY_LEVEL:
+                    print(f"🚨 BATTERY EMERGENCY: {battery_level}% - Using emergency override for landing")
+                    if not await self.land(force_land_here=True, emergency_override=True):
+                        print("❌ Emergency landing failed - critical battery situation!")
+                        return False
+                else:
+                    if not await self.land():
+                        return False
                 
             print("[MISSION] SUCCESS - Timed mission completed")
             self.current_mission = None
@@ -703,7 +716,7 @@ class Controller:
             return False
 
     async def emergency_disarm(self, *, confirm_emergency=False):
-        """Emergency disarm with mandatory confirmation and logging."""
+        """Emergency disarm - SMART emergency that considers altitude to prevent crashes with mandatory confirmation."""
         if not confirm_emergency:
             raise Exception("❌ Emergency disarm requires explicit confirmation (confirm_emergency=True)")
             
@@ -721,14 +734,28 @@ class Controller:
             print("🚨 EMERGENCY DISARM INITIATED 🚨")
             self.flight_logger.log_emergency("emergency_disarm", "manual_command")
             
-            vehicle.armed = False
-            # Shorter timeout for emergency
-            if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 8.0, desc="emergency disarming"):
-                print("❌ Emergency disarm timeout - vehicle may still be armed!")
-                return False
+            # CHECK ALTITUDE FIRST - Don't kill drone in mid-air!
+            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+            print(f"[EMERGENCY] Current altitude: {current_alt:.1f}m")
+            
+            if current_alt > 2.0:  # If above 2m, emergency land instead!
+                print(f"[EMERGENCY] HIGH ALTITUDE - Emergency landing instead of disarm")
+                self.flight_logger.log_emergency("emergency_land_high_altitude", f"altitude_{current_alt:.1f}m")
+                return await self.emergency_land()
+            else:
+                print("[EMERGENCY] LOW ALTITUDE - Safe to disarm")
+                # Cut throttle first for safety
+                await self.set_throttle(0)
+                print("[EMERGENCY] Cutting power")
+                vehicle.armed = False
                 
-            print("✅ Emergency disarm successful.")
-            return True
+                # Shorter timeout for emergency
+                if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 8.0, desc="emergency disarming"):
+                    print("❌ Emergency disarm timeout - vehicle may still be armed!")
+                    return False
+                    
+                print("✅ Emergency disarm successful.")
+                return True
         except Exception as e:
             print(f"❌ Emergency disarm failed: {e}")
             self.flight_logger.log_emergency("emergency_disarm_failed", str(e))
@@ -859,3 +886,155 @@ class Controller:
             "remaining_time": remaining,
             "progress": min(1.0, elapsed / self.current_mission["duration"])
         }
+
+    async def handle_battery_emergency(self, broadcast_func) -> str:
+        """
+        Handle critical battery emergency with user choice prompting.
+        
+        Args:
+            broadcast_func: Function to broadcast messages to frontend
+            
+        Returns:
+            str: Action taken ('rtl', 'land', or 'timeout_rtl')
+        """
+        if not self._vehicle_ready(require_armable=False):
+            return 'error'
+            
+        vehicle = self.connection.vehicle
+        battery = getattr(vehicle, "battery", None)
+        battery_level = getattr(battery, "level", None) if battery else None
+        
+        if battery_level is None:
+            print("❌ Cannot determine battery level for emergency handling")
+            return 'error'
+            
+        # Get context information for recommendation
+        distance_to_home = self.get_home_distance()
+        current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+        gps_fix = getattr(getattr(vehicle, "gps_0", None), "fix_type", 0) if hasattr(vehicle, "gps_0") else 0
+        
+        # Determine smart recommendation based on context
+        recommendation = "RTL"  # Default safe choice
+        reason = "Safe return to launch point"
+        
+        if distance_to_home is not None:
+            if distance_to_home < 10:  # Very close to home
+                recommendation = "LAND"
+                reason = f"Close to home ({distance_to_home:.1f}m) - landing here is safe"
+            elif distance_to_home > 100 and battery_level < 20:  # Far from home with very low battery
+                recommendation = "LAND"
+                reason = f"Far from home ({distance_to_home:.1f}m) with critical battery - immediate landing safer"
+                
+        if current_alt > 50 and battery_level < 15:  # High altitude with extremely low battery
+            recommendation = "LAND"
+            reason = f"High altitude ({current_alt:.1f}m) with extremely low battery - immediate landing required"
+            
+        if gps_fix < 3:  # Poor GPS
+            recommendation = "LAND"
+            reason = "Poor GPS fix - landing immediately is safer than RTL navigation"
+        
+        print(f"🚨 BATTERY EMERGENCY: {battery_level}% - Prompting user for action")
+        print(f"💡 Recommendation: {recommendation} ({reason})")
+        
+        # Send emergency prompt to frontend
+        emergency_data = {
+            "type": "battery_emergency",
+            "battery_level": battery_level,
+            "distance_to_home": distance_to_home,
+            "altitude": current_alt,
+            "gps_fix": gps_fix,
+            "recommendation": recommendation,
+            "reason": reason,
+            "timeout_seconds": 10
+        }
+        
+        await broadcast_func(json.dumps(emergency_data))
+        
+        # Wait for user response with 10-second timeout
+        import asyncio
+        from datetime import datetime, timedelta
+        
+        start_time = datetime.now()
+        timeout_seconds = 10
+        user_choice = None
+        
+        # Store the emergency state for response handling
+        if not hasattr(self, '_emergency_prompts'):
+            self._emergency_prompts = {}
+        
+        prompt_id = f"battery_emergency_{int(time.time() * 1000)}"
+        self._emergency_prompts[prompt_id] = {
+            "start_time": start_time,
+            "timeout": timeout_seconds,
+            "response": None
+        }
+        
+        # Send prompt ID to frontend
+        prompt_data = {
+            "type": "battery_emergency_prompt",
+            "prompt_id": prompt_id
+        }
+        await broadcast_func(json.dumps(prompt_data))
+        
+        print(f"📡 Sent emergency prompt with ID: {prompt_id}")
+        
+        # Countdown and wait for response
+        while (datetime.now() - start_time).total_seconds() < timeout_seconds:
+            # Check if user responded
+            if prompt_id in self._emergency_prompts and self._emergency_prompts[prompt_id]["response"]:
+                user_choice = self._emergency_prompts[prompt_id]["response"]
+                print(f"✅ User responded: {user_choice}")
+                break
+                
+            # Send countdown update
+            remaining = timeout_seconds - (datetime.now() - start_time).total_seconds()
+            countdown_data = {
+                "type": "battery_emergency_countdown",
+                "prompt_id": prompt_id,
+                "remaining_seconds": max(0, remaining)
+            }
+            await broadcast_func(json.dumps(countdown_data))
+            
+            await asyncio.sleep(0.5)  # Check every 500ms
+        
+        # Clean up prompt data
+        if prompt_id in self._emergency_prompts:
+            del self._emergency_prompts[prompt_id]
+        
+        # Execute chosen action
+        if user_choice == "LAND":
+            print("🚨 User chose EMERGENCY LAND - executing immediate landing")
+            await broadcast_func(json.dumps({"type": "battery_emergency_action", "action": "LAND"}))
+            success = await self.land(force_land_here=True, emergency_override=True)
+            return "land" if success else "land_failed"
+        elif user_choice == "RTL":
+            print("🚨 User chose RTL - executing return to launch")
+            await broadcast_func(json.dumps({"type": "battery_emergency_action", "action": "RTL"}))
+            success = await self.rtl(emergency_override=True)
+            return "rtl" if success else "rtl_failed"
+        else:
+            # Timeout - use default RTL
+            print(f"⏰ No user response in {timeout_seconds}s - defaulting to RTL")
+            await broadcast_func(json.dumps({"type": "battery_emergency_action", "action": "RTL_TIMEOUT"}))
+            success = await self.rtl(emergency_override=True)
+            return "timeout_rtl" if success else "timeout_rtl_failed"
+    
+    def handle_battery_emergency_response(self, prompt_id: str, choice: str) -> bool:
+        """Handle user response to battery emergency prompt."""
+        print(f"🔄 Processing emergency response: prompt_id={prompt_id}, choice={choice}")
+        
+        if not hasattr(self, '_emergency_prompts'):
+            print("❌ No emergency prompts system initialized")
+            return False
+            
+        if prompt_id not in self._emergency_prompts:
+            print(f"❌ Prompt ID {prompt_id} not found or expired")
+            return False
+            
+        if choice not in ["RTL", "LAND"]:
+            print(f"❌ Invalid choice: {choice}")
+            return False
+            
+        self._emergency_prompts[prompt_id]["response"] = choice
+        print(f"✅ Emergency response recorded: {choice}")
+        return True
