@@ -24,7 +24,7 @@ export default function DroneDashboard() {
     let mounted = true
     const checkHealth = async () => {
       try {
-        const res = await fetch("http://localhost:4001/health") // Backend health endpoint
+        const res = await fetch("http://localhost:4002/health") // Backend health endpoint
         if (!mounted) return
         if (res.ok) {
           const json = await res.json()

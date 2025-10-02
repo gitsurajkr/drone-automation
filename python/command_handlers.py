@@ -115,36 +115,81 @@ async def handle_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
 
 
 async def handle_land(conn) -> Dict[str, Any]:
-    # Handle land command
-    controller = getattr(conn, "controller", None)
-    if controller is None:
-        return {"status": "error", "detail": "no controller available"}
-    
-    # Add landing logic here when implementing
-    return {"status": "info", "detail": "land command not yet implemented"}
-
-
-async def handle_emergency_disarm(conn) -> Dict[str, Any]:
-    # Handle emergency disarm command - bypasses safety checks
+    """Handle land command - safely land at current location."""
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
     
     try:
-        result = await controller.emergency_disarm()
+        result = await controller.land()
+        return {"status": "ok" if result else "error", 
+                "detail": "landing successful" if result else "landing failed"}
+    except Exception as e:
+        return {"status": "error", "detail": f"landing exception: {e}"}
+
+
+async def handle_emergency_disarm(conn) -> Dict[str, Any]:
+    """Handle emergency disarm command with mandatory confirmation."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Emergency disarm requires explicit confirmation for safety
+        result = await controller.emergency_disarm(confirm_emergency=True)
         return {"status": "ok" if result else "error", "detail": "emergency disarmed" if result else "emergency disarm failed"}
     except Exception as e:
         return {"status": "error", "detail": f"emergency disarm exception: {e}"}
 
 
 async def handle_rtl(conn) -> Dict[str, Any]:
-    # Handle return to launch command
+    """Handle return to launch command - return home and land."""
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
     
-    # Add RTL logic here when implementing
-    return {"status": "info", "detail": "return to launch not yet implemented"}
+    try:
+        result = await controller.rtl()
+        return {"status": "ok" if result else "error", 
+                "detail": "return to launch successful" if result else "return to launch failed"}
+    except Exception as e:
+        return {"status": "error", "detail": f"RTL exception: {e}"}
+
+
+async def handle_fly_timed(conn, altitude: float = 5.0, duration: float = 5.0) -> Dict[str, Any]:
+    """Handle timed flight mission - fly at altitude for duration then RTL."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Validate parameters
+        if altitude <= 0 or altitude > 30:
+            return {"status": "error", "detail": f"altitude must be between 0 and 30m (got {altitude}m)"}
+        if duration <= 0 or duration > 300:
+            return {"status": "error", "detail": f"duration must be between 0 and 300s (got {duration}s)"}
+            
+        result = await controller.fly_timed_mission(altitude, duration)
+        return {"status": "ok" if result else "error", 
+                "detail": f"timed flight mission ({altitude}m for {duration}s) successful" if result else "timed flight mission failed"}
+    except Exception as e:
+        return {"status": "error", "detail": f"timed flight exception: {e}"}
+
+
+async def handle_mission_status(conn) -> Dict[str, Any]:
+    """Handle mission status request."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        mission_status = controller.get_mission_status()
+        if mission_status:
+            return {"status": "ok", "detail": "mission active", "mission": mission_status}
+        else:
+            return {"status": "ok", "detail": "no active mission", "mission": None}
+    except Exception as e:
+        return {"status": "error", "detail": f"mission status exception: {e}"}
 
 
 # Command registry - maps command types to their handlers
@@ -161,6 +206,8 @@ COMMAND_HANDLERS = {
     "takeoff": handle_takeoff,
     "land": handle_land,
     "rtl": handle_rtl,  
+    "fly_timed": handle_fly_timed,
+    "mission_status": handle_mission_status,
 }
 
 
@@ -187,7 +234,7 @@ async def execute_command(
         return await handler(reconnect_telemetry_func)
     elif command_type == "status":
         return await handler(drone_connected)
-    elif command_type in ["arm", "disarm", "emergency_disarm", "sitl_setup", "land", "rtl"]:
+    elif command_type in ["arm", "disarm", "emergency_disarm", "sitl_setup", "land", "rtl", "mission_status"]:
         return await handler(conn)
     elif command_type == "takeoff":
         # Handle takeoff with optional altitude parameter
@@ -198,6 +245,19 @@ async def execute_command(
             except (ValueError, TypeError):
                 return {"status": "error", "detail": "invalid altitude parameter"}
         return await handler(conn, altitude)
+    elif command_type == "fly_timed":
+        # Handle timed flight with altitude and duration parameters
+        altitude = 5.0  # default altitude
+        duration = 5.0  # default duration
+        if payload:
+            try:
+                if "altitude" in payload:
+                    altitude = float(payload["altitude"])
+                if "duration" in payload:
+                    duration = float(payload["duration"])
+            except (ValueError, TypeError):
+                return {"status": "error", "detail": "invalid altitude or duration parameter"}
+        return await handler(conn, altitude, duration)
     elif command_type == "message":
         return await handler(payload, broadcast_func)
     else:

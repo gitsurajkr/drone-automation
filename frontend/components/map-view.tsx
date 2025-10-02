@@ -27,7 +27,7 @@ interface Mission {
 
 interface EnhancedMapViewProps {
     droneData: DroneData | null
-    onCommand: (command: string) => void
+    onCommand: (command: string, payload?: any) => Promise<any>
     alerts: DroneAlert[]
     logs: DroneLog[]
     isConnected: boolean
@@ -37,8 +37,16 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
     const [pathHistory, setPathHistory] = useState<Array<{ lat: number; lng: number }>>([])
     const [waypoints, setWaypoints] = useState<Waypoint[]>([])
     const [isArmed, setIsArmed] = useState(false)
-    const [mission, setMission] = useState<Mission>({ altitude: 50, duration: 10, speed: 5 })
-    const [newWaypoint, setNewWaypoint] = useState({ name: "", lat: "", lng: "", altitude: "50" })
+    const [mission, setMission] = useState<Mission>({ altitude: 5, duration: 5, speed: 2 })
+    const [newWaypoint, setNewWaypoint] = useState({ name: "", lat: "", lng: "", altitude: "5" })
+    const [isProcessing, setIsProcessing] = useState(false)
+
+    // Sync armed state with drone data
+    useEffect(() => {
+        if (droneData?.armed !== undefined) {
+            setIsArmed(droneData.armed)
+        }
+    }, [droneData?.armed])
 
     useEffect(() => {
         if (!droneData?.gps) return
@@ -63,8 +71,30 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
         setWaypoints(waypoints.filter((wp) => wp.id !== id))
     }
 
-    const startMission = () => {
-        onCommand(`START_MISSION:${JSON.stringify({ waypoints, mission })}`)
+    const handleCommand = async (command: string, payload?: any) => {
+        setIsProcessing(true)
+        try {
+            await onCommand(command, payload)
+        } finally {
+            setIsProcessing(false)
+        }
+    }
+
+    const startTimedMission = async () => {
+        if (!isArmed) {
+            alert("Please ARM the drone first!")
+            return
+        }
+
+        await handleCommand("fly_timed", {
+            altitude: mission.altitude,
+            duration: mission.duration * 60 // Convert minutes to seconds
+        })
+    }
+
+    const startWaypointMission = () => {
+        // This would be implemented for waypoint missions
+        alert("Waypoint missions not yet implemented. Use timed flight instead.")
     }
 
     return (
@@ -87,13 +117,39 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
                                 variant={isArmed ? "destructive" : "default"}
                                 size="sm"
                                 className="flex-1"
-                                onClick={() => {
-                                    setIsArmed(!isArmed)
-                                    onCommand(isArmed ? "DISARM" : "ARM")
-                                }}
+                                disabled={isProcessing || !isConnected}
+                                onClick={() => handleCommand(isArmed ? "disarm" : "arm")}
                             >
                                 {isArmed ? <ShieldOff className="h-4 w-4 mr-2" /> : <Shield className="h-4 w-4 mr-2" />}
-                                {isArmed ? "Disarm" : "Arm"}
+                                {isProcessing ? "Processing..." : (isArmed ? "Disarm" : "Arm")}
+                            </Button>
+                        </div>
+
+                        {/* Quick Flight Controls */}
+                        <div className="grid grid-cols-3 gap-1">
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={isProcessing || !isArmed || !isConnected}
+                                onClick={() => handleCommand("takeoff", { altitude: 5 })}
+                            >
+                                Takeoff
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={isProcessing || !isArmed || !isConnected}
+                                onClick={() => handleCommand("land")}
+                            >
+                                Land
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={isProcessing || !isArmed || !isConnected}
+                                onClick={() => handleCommand("rtl")}
+                            >
+                                RTL
                             </Button>
                         </div>
 
@@ -112,7 +168,7 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
                                     Speed
                                 </span>
                                 <span className="font-mono">{(droneData?.velocity.avgspeed ?? 0).toFixed(1)} m/s</span>
-                                
+
                             </div>
 
                             <div className="flex items-center justify-between">
@@ -143,8 +199,10 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
                                 <Input
                                     id="altitude"
                                     type="number"
+                                    min="1"
+                                    max="30"
                                     value={mission.altitude}
-                                    onChange={(e) => setMission({ ...mission, altitude: Number.parseFloat(e.target.value) || 0 })}
+                                    onChange={(e) => setMission({ ...mission, altitude: Number.parseFloat(e.target.value) || 5 })}
                                     className="h-8"
                                 />
                             </div>
@@ -155,8 +213,11 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
                                 <Input
                                     id="duration"
                                     type="number"
+                                    min="0.1"
+                                    max="5"
+                                    step="0.1"
                                     value={mission.duration}
-                                    onChange={(e) => setMission({ ...mission, duration: Number.parseFloat(e.target.value) || 0 })}
+                                    onChange={(e) => setMission({ ...mission, duration: Number.parseFloat(e.target.value) || 1 })}
                                     className="h-8"
                                 />
                             </div>
@@ -164,21 +225,45 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
 
                         <div>
                             <Label htmlFor="speed" className="text-xs">
-                                Speed (m/s)
+                                Max Speed (m/s)
                             </Label>
                             <Input
                                 id="speed"
                                 type="number"
+                                min="0.5"
+                                max="10"
+                                step="0.5"
                                 value={mission.speed}
-                                onChange={(e) => setMission({ ...mission, speed: Number.parseFloat(e.target.value) || 0 })}
+                                onChange={(e) => setMission({ ...mission, speed: Number.parseFloat(e.target.value) || 2 })}
                                 className="h-8"
                             />
                         </div>
 
-                        <Button onClick={startMission} disabled={waypoints.length === 0 || !isArmed} className="w-full" size="sm">
-                            <Play className="h-4 w-4 mr-2" />
-                            Start Mission
-                        </Button>
+                        <div className="text-xs text-muted-foreground bg-muted p-2 rounded">
+                            <strong>Mission:</strong> Fly to {mission.altitude}m for {mission.duration} min, then return home
+                        </div>
+
+                        <div className="space-y-2">
+                            <Button
+                                onClick={startTimedMission}
+                                disabled={isProcessing || !isArmed || !isConnected}
+                                className="w-full"
+                                size="sm"
+                            >
+                                <Play className="h-4 w-4 mr-2" />
+                                Start Timed Flight
+                            </Button>
+                            <Button
+                                onClick={startWaypointMission}
+                                disabled={waypoints.length === 0 || !isArmed || !isConnected}
+                                className="w-full"
+                                size="sm"
+                                variant="outline"
+                            >
+                                <Target className="h-4 w-4 mr-2" />
+                                Waypoint Mission (WIP)
+                            </Button>
+                        </div>
                     </CardContent>
                 </Card>
 

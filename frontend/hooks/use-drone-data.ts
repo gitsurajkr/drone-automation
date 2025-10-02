@@ -64,7 +64,7 @@ export function useDroneData() {
     let retryDelay = 500; // ms
 
     function connect() {
-      const ws = new WebSocket("ws://localhost:4000");
+      const ws = new WebSocket("ws://localhost:4001"); // Updated to match new backend port
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -148,7 +148,7 @@ export function useDroneData() {
                 ]);
               }
               pendingRef.current.delete(msg.id);
-              return; 
+              return;
             }
           }
           // If backend forwarded an error (for example Python backend not connected), show toast

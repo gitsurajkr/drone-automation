@@ -1,7 +1,7 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import http from 'http'
 const PYTHON_WS_URL = 'ws://localhost:8765';
-const NODE_WS_PORT = 4000;
+const NODE_WS_PORT = 4001; // Changed to avoid conflict
 
 const wss = new WebSocketServer({ port: NODE_WS_PORT });
 const clients = new Set<WebSocket>();
@@ -31,14 +31,24 @@ wss.on('connection', (ws) => {
                     if (maybeId && typeof maybeId === 'string') {
                         pendingRequests.set(maybeId, ws);
                     }
+                    console.log('Forwarding to Python:', raw);
                     pythonWs.send(raw);
                     return;
                 }
             }
         } catch (e) {
-            const cmd = raw.toLowerCase();
-            if (['connect', 'disconnect', 'reconnect', 'status', 'arm', 'disarm'].includes(cmd)) {
+            // Handle legacy text commands and new enhanced commands
+            const cmd = raw.toLowerCase().trim();
+            const enhancedCommands = [
+                'connect', 'disconnect', 'reconnect', 'status',
+                'arm', 'disarm', 'emergency_disarm',
+                'takeoff', 'land', 'rtl',
+                'fly_timed', 'mission_status', 'sitl_setup'
+            ];
+
+            if (enhancedCommands.includes(cmd)) {
                 if (pythonWs && pythonWs.readyState === WebSocket.OPEN) {
+                    console.log('Forwarding command to Python:', cmd);
                     pythonWs.send(cmd);
                     return;
                 }
@@ -68,7 +78,7 @@ console.log(`Node.js WS server listening on ws://localhost:${NODE_WS_PORT}`);
 let pythonWs: WebSocket | null = null;
 let pythonConnected = false;
 
-const HEALTH_PORT = 4001
+const HEALTH_PORT = 4002 // Changed to avoid conflict
 const healthServer = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
         res.setHeader('Content-Type', 'application/json')

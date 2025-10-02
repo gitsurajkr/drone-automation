@@ -1,10 +1,19 @@
 import asyncio
 import websockets
 import json
+import sys
+import os
+
+# Add parent directory to Python path to find modules
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, parent_dir)
+
 from telemetry_data import TelemetryData
 from connection import Connection
 from controller import Controller
-from config import WS_HOST, WS_PORT, DRONE_ID, TELEMETRY_INTERVAL, DEFAULT_CONNECTION_STRING, DEFAULT_BAUD_RATE, SITL_PATTERNS
+from config import WS_HOST, WS_PORT, DRONE_ID, TELEMETRY_INTERVAL, DEFAULT_CONNECTION_STRING, DEFAULT_BAUD_RATE
+from sitl_config import SITLConfig
 from command_handlers import execute_command
 
 connected_clients = set()
@@ -46,17 +55,16 @@ async def start_telemetry():
     try:
         conn.controller = Controller(conn)
         
-        # Auto-setup SITL configuration if this appears to be a SITL connection
-        is_sitl = any(pattern in connection_string for pattern in SITL_PATTERNS)
-        if is_sitl:
-            print("SITL connection detected, configuring...")
-            setup_result = await conn.controller.setup_sitl_connection()
+        # Auto-setup SITL configuration using enhanced safety validation
+        if SITLConfig.is_sitl_connection(connection_string):
+            print("🔍 SITL connection detected, validating safety...")
+            setup_result = await conn.controller.setup_sitl_connection(connection_string)
             if setup_result:
                 print("✅ SITL configuration successful")
             else:
                 print("⚠️ SITL configuration failed, continuing anyway...")
         else:
-            print("Hardware connection detected - skipping SITL setup")
+            print("🔧 Hardware connection detected - skipping SITL setup")
             
     except Exception as e:
         print(f"Failed to create controller: {e}")

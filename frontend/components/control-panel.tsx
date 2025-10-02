@@ -61,6 +61,12 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
       } else if (command === "emergency_disarm") {
         toast.success("EMERGENCY DISARM successful")
         setLocalArmed(false)
+      } else if (command === "land") {
+        toast.success("Landing initiated")
+      } else if (command === "rtl") {
+        toast.success("Return to Launch initiated")
+      } else if (command === "fly_timed") {
+        toast.success("Timed flight mission started!")
       } else {
         toast.success(`Command "${command}" executed`)
       }
@@ -80,6 +86,12 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
         toast.error(`Failed to DISARM: ${errorMsg}`)
       } else if (command === "emergency_disarm") {
         toast.error(`EMERGENCY DISARM FAILED: ${errorMsg}`)
+      } else if (command === "land") {
+        toast.error(`Landing failed: ${errorMsg}`)
+      } else if (command === "rtl") {
+        toast.error(`Return to Launch failed: ${errorMsg}`)
+      } else if (command === "fly_timed") {
+        toast.error(`Timed flight mission failed: ${errorMsg}`)
       } else {
         toast.error(`Failed: ${command} - ${errorMsg}`)
       }
@@ -188,7 +200,7 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
         </div>
 
         {/* Flight Controls */}
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button
             variant="default"
             onClick={() => handleCommandAsync("takeoff")}
@@ -209,6 +221,48 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
             disabled={connProcessing || pythonConnected !== true || !localArmed}
           >
             Return Home
+          </Button>
+        </div>
+
+        {/* Timed Flight Mission */}
+        <div className="space-y-2 border-t pt-4">
+          <p className="text-sm font-medium">Timed Flight Mission</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-muted-foreground">Altitude (m)</label>
+              <input
+                type="number"
+                min="1"
+                max="30"
+                defaultValue="5"
+                className="w-full px-2 py-1 text-sm border rounded"
+                id="mission-altitude"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">Duration (s)</label>
+              <input
+                type="number"
+                min="1"
+                max="300"
+                defaultValue="5"
+                className="w-full px-2 py-1 text-sm border rounded"
+                id="mission-duration"
+              />
+            </div>
+          </div>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => {
+              const altitude = parseFloat((document.getElementById('mission-altitude') as HTMLInputElement)?.value || '5')
+              const duration = parseFloat((document.getElementById('mission-duration') as HTMLInputElement)?.value || '5')
+              handleCommandAsync("fly_timed", { altitude, duration })
+            }}
+            disabled={connProcessing || pythonConnected !== true || !localArmed}
+            className="w-full"
+          >
+            🚁 Start Timed Mission
           </Button>
         </div>
 

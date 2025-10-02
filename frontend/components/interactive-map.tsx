@@ -16,7 +16,7 @@ declare global {
 
 interface InteractiveMapProps {
     droneData: DroneData | null
-    onCommand: (command: string) => void
+    onCommand: (command: string, payload?: any) => Promise<any>
     isConnected: boolean
 }
 
@@ -136,7 +136,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
 
                 // Create drone marker using the drone.png image
                 const droneIcon = {
-                    url: '/drone.png',
+                    url: '/drone.png', // Using the existing drone1.png file
                     scaledSize: new window.google.maps.Size(40, 40),
                     anchor: new window.google.maps.Point(20, 20),
                     optimized: false
@@ -146,9 +146,28 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                     map,
                     position: center,
                     icon: droneIcon,
-                    title: 'Drone Position',
-                    clickable: false,
+                    title: `Drone Position - ${isConnected ? 'Connected' : 'Disconnected'}`,
+                    clickable: true,
                     optimized: false,
+                })
+
+                // Add click listener to drone marker for quick commands
+                marker.addListener('click', () => {
+                    if (isConnected && droneData) {
+                        const infoWindow = new window.google.maps.InfoWindow({
+                            content: `
+                                <div style="font-family: Arial, sans-serif; min-width: 200px;">
+                                    <h4 style="margin: 0 0 10px 0; color: #333;">Drone Status</h4>
+                                    <p><strong>Altitude:</strong> ${droneData.altitude?.toFixed(1) || 0}m</p>
+                                    <p><strong>Battery:</strong> ${droneData.battery || 0}%</p>
+                                    <p><strong>Speed:</strong> ${droneData.velocity?.avgspeed?.toFixed(1) || 0} m/s</p>
+                                    <p><strong>Armed:</strong> ${droneData.armed ? 'Yes' : 'No'}</p>
+                                    <p><strong>Mode:</strong> ${droneData.mode || 'Unknown'}</p>
+                                </div>
+                            `
+                        })
+                        infoWindow.open(map, marker)
+                    }
                 })
 
                 droneMarkerRef.current = marker
@@ -268,10 +287,19 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         waypointMarkersRef.current = []
     }
 
-    const startMission = () => {
+    const startMission = async () => {
         if (drawnPath.length > 0) {
-            onCommand(`START_DRAWN_MISSION:${JSON.stringify(drawnPath)}`)
-            console.log("[Sky Navigator] Starting mission with drawn path:", drawnPath)
+            try {
+                // For now, convert drawn path to a simple waypoint mission
+                // This could be enhanced to support actual waypoint navigation
+                await onCommand("fly_timed", {
+                    altitude: 10,
+                    duration: drawnPath.length * 30 // 30 seconds per waypoint
+                })
+                console.log("[Sky Navigator] Starting timed mission based on drawn path:", drawnPath)
+            } catch (error) {
+                console.error("Failed to start mission:", error)
+            }
         }
     }
 
@@ -305,7 +333,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         // Update drone icon with proper size based on connection status
         const size = isConnected ? 40 : 30
         const droneIcon = {
-            url: '/drone.png',
+            url: '/drone.png', // Use the existing drone1.png file
             scaledSize: new window.google.maps.Size(size, size),
             anchor: new window.google.maps.Point(size / 2, size / 2),
             optimized: false
@@ -452,8 +480,8 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
 
                 {/* Map Container */}
                 <div className={`relative bg-black rounded-lg overflow-hidden transition-all duration-300 ${isFullscreen
-                        ? 'fixed inset-0 z-50 rounded-none'
-                        : 'h-full min-h-[400px]'
+                    ? 'fixed inset-0 z-50 rounded-none'
+                    : 'h-full min-h-[400px]'
                     }`}>
 
                     {/* Map Overlay Info - Left Side */}
