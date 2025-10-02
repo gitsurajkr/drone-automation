@@ -92,30 +92,6 @@ class Controller:
         else:  # 3S battery (default)
             return SafetyConfig.MIN_BATTERY_VOLTAGE_3S
 
-    def _detect_sitl_connection(self) -> bool:
-        """Detect if connected to SITL (Software In The Loop) simulation."""
-        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
-            return False
-            
-        vehicle = self.connection.vehicle
-        
-        try:
-            # Check for SITL indicators
-            # 1. ARMING_CHECK parameter is often disabled in SITL (0 = all checks disabled)
-            arming_check = getattr(vehicle.parameters, 'ARMING_CHECK', None)
-            if arming_check is not None and arming_check == 0:
-                # Additional check: SITL usually has poor GPS accuracy
-                gps = getattr(vehicle, "gps_0", None)
-                if gps:
-                    eph = getattr(gps, 'eph', 0)
-                    if eph > 50:  # SITL typically has HDOP > 50
-                        return True
-            
-            return False
-        except Exception as e:
-            print(f"SITL detection error: {e}")
-            return False
-
     async def _wait_for_condition(self, check_fn, timeout, interval=0.5, desc="condition"):
         start = time.time()
         while not check_fn():
@@ -172,6 +148,28 @@ class Controller:
             print(f"[ARM] FAILED - Exception: {e}")
             return False
 
+    async def arm_and_takeoff(self, altitude: float = 5.0, *, wait_mode_timeout=10.0, wait_arm_timeout=20.0) -> bool:
+        """Arm vehicle and immediately takeoff - prevents auto-disarm timeout."""
+        print(f"[ARM+TAKEOFF] Starting sequence to {altitude}m")
+        
+        # Step 1: Arm the vehicle
+        if not await self.arm(wait_mode_timeout=wait_mode_timeout, wait_arm_timeout=wait_arm_timeout):
+            print("[ARM+TAKEOFF] FAILED - Arming unsuccessful")
+            return False
+        
+        # Step 2: Immediate takeoff to prevent auto-disarm
+        print("[ARM+TAKEOFF] Proceeding to takeoff (preventing auto-disarm)")
+        await asyncio.sleep(0.5)  # Brief pause to ensure arming is stable
+        
+        if not await self.takeoff(altitude):
+            print("[ARM+TAKEOFF] FAILED - Takeoff unsuccessful")
+            # Try to disarm safely
+            await self.disarm()
+            return False
+        
+        print(f"[ARM+TAKEOFF] SUCCESS - Now at {altitude}m altitude")
+        return True
+
     async def disarm(self, *, wait_disarm_timeout=15.0):
         if not self._vehicle_ready(require_armable=False):
             return False
@@ -201,7 +199,49 @@ class Controller:
             print(f"[DISARM] FAILED - Exception: {e}")
             return False
 
+    async def emergency_disarm(self, *, confirm_emergency=False):
+        """Emergency disarm - SMART emergency that considers altitude to prevent crashes with mandatory confirmation."""
+        if not confirm_emergency:
+            raise Exception("❌ Emergency disarm requires explicit confirmation (confirm_emergency=True)")
+            
+        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
+            print("❌ Vehicle not connected - cannot emergency disarm.")
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        if not getattr(vehicle, "armed", False):
+            print("✅ Vehicle already disarmed.")
+            return True
 
+        try:
+            print("🚨 EMERGENCY DISARM INITIATED 🚨")
+            self.flight_logger.log_emergency("emergency_disarm", "manual_command")
+            
+            # CHECK ALTITUDE FIRST - Don't kill drone in mid-air!
+            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
+            print(f"[EMERGENCY] Current altitude: {current_alt:.1f}m")
+            
+            if current_alt > 2.0:  # If above 2m, emergency land instead!
+                print(f"[EMERGENCY] HIGH ALTITUDE - Emergency landing instead of disarm")
+                self.flight_logger.log_emergency("emergency_land_high_altitude", f"altitude_{current_alt:.1f}m")
+                return await self.emergency_land()
+            else:
+                print("[EMERGENCY] LOW ALTITUDE - Safe to disarm")
+                # Cut throttle first for safety
+                await self.set_throttle(0)
+                print("[EMERGENCY] Cutting power")
+                vehicle.armed = False
+                # Shorter timeout for emergency (increased from 5s to 8s for better reliability)
+                if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 8.0, desc="emergency disarming"):
+                    print("❌ Emergency disarm timeout - vehicle may still be armed!")
+                    return False
+                print("✅ Emergency disarm successful.")
+                return True
+        except Exception as e:
+            print(f"❌ Emergency disarm failed: {e}")
+            self.flight_logger.log_emergency("emergency_disarm_failed", str(e))
+            return False
 
     async def set_throttle(self, throttle_percent: float):
         """
@@ -328,15 +368,15 @@ class Controller:
         
         # CRITICAL: Enhanced pre-flight safety checks
         try:
-            # Check GPS integrity with SITL awareness
+            # Check GPS integrity for real drone (strict requirements)
             gps = getattr(vehicle, "gps_0", None)
             if gps:
                 gps_data = {
                     'eph': getattr(gps, 'eph', 999),
                     'groundspeed': getattr(vehicle, 'groundspeed', 0)
                 }
-                is_sitl = self._detect_sitl_connection()
-                gps_ok, gps_msg = SafetyConfig.validate_gps_integrity(gps_data, is_sitl=is_sitl)
+                # Real drone GPS validation (strict requirements)
+                gps_ok, gps_msg = SafetyConfig.validate_gps_integrity(gps_data)
                 if not gps_ok:
                     print(f"❌ GPS integrity check failed: {gps_msg}")
                     return False
@@ -399,68 +439,13 @@ class Controller:
             print(f"Takeoff failed: {e}")
             return False
 
-    async def arm_and_takeoff(self, altitude=5.0):
-        """Arm the drone and immediately takeoff to prevent auto-disarm timeout.
-        
-        This method solves the ArduPilot auto-disarm issue where the vehicle
-        automatically disarms 4-5 seconds after arming if no flight commands are sent.
-        
-        Args:
-            altitude: Target takeoff altitude in meters (default: 5.0m)
-            
-        Returns:
-            bool: True if arm and takeoff successful, False otherwise
-        """
-        if not self._vehicle_ready(require_armable=True):
-            return False
-            
-        vehicle = self.connection.vehicle
-        
-        try:
-            print(f"[ARM+TAKEOFF] Starting sequence to {altitude}m")
-            
-            # Step 1: Arm the vehicle
-            if not await self.arm():
-                print("[ARM+TAKEOFF] FAILED - Arming unsuccessful")
-                return False
-            
-            # Step 2: Immediate takeoff to prevent auto-disarm
-            print("[ARM+TAKEOFF] Proceeding to takeoff (preventing auto-disarm)")
-            
-            # Set GUIDED mode for takeoff
-            vehicle.mode = VehicleMode("GUIDED")
-            
-            # Wait briefly for mode change
-            await asyncio.sleep(0.5)
-            
-            # Verify mode change
-            if getattr(vehicle.mode, "name", None) != "GUIDED":
-                print("[ARM+TAKEOFF] FAILED - Could not set GUIDED mode")
-                return False
-            
-            # Step 3: Immediate takeoff to prevent auto-disarm
-            success = await self.takeoff(altitude)
-            
-            if success:
-                print(f"[ARM+TAKEOFF] SUCCESS - Now at {altitude}m altitude")
-                return True
-            else:
-                print("[ARM+TAKEOFF] FAILED - Takeoff unsuccessful")
-                # Try to disarm safely
-                await self.disarm()
-                return False
-                
-        except Exception as e:
-            print(f"[ARM+TAKEOFF] FAILED - Exception: {e}")
-            return False
-
     async def land(self, *, wait_timeout=60.0, force_land_here=False, emergency_override=False):
         """Safely land the vehicle - defaults to RTL for safety unless forced.
         
         Args:
             wait_timeout: Maximum time to wait for landing completion
             force_land_here: If True, land at current location instead of RTL (DANGEROUS!)
-            emergency_override: If True, bypass battery safety checks for emergency situations
+            emergency_override: If True, bypass battery safety checks for emergency landing
         """
         if not self._vehicle_ready(require_armable=False, emergency_override=emergency_override):
             return False
@@ -476,7 +461,7 @@ class Controller:
         # SAFETY DECISION: RTL is safer than landing at unknown location
         if not force_land_here:
             print("🏠 SAFETY MODE: Using RTL instead of landing here (safer return to launch)")
-            return await self.rtl(wait_timeout=wait_timeout)
+            return await self.rtl(wait_timeout=wait_timeout, emergency_override=emergency_override)
         else:
             print("⚠️ FORCED LAND HERE - Landing at current location (potentially dangerous!)")
             self.flight_logger.log_emergency("forced_land_here", f"altitude_{current_alt:.1f}m")
@@ -556,7 +541,7 @@ class Controller:
                 10.0, desc="RTL mode"
             ):
                 print("[RTL] FAILED - Could not set RTL mode")
-                return await self.emergency_land()
+                return False
                 
             print("[RTL] Returning to launch point...")
             
@@ -680,6 +665,8 @@ class Controller:
                 
                 await asyncio.sleep(1)
             
+            print("[MISSION] Flight duration complete - returning to launch")
+            
             # Step 3: Return to Launch with enhanced battery safety handling
             print("[MISSION] Flight duration complete - returning to launch")
             battery = getattr(vehicle, "battery", None)
@@ -711,54 +698,8 @@ class Controller:
             return True
             
         except Exception as e:
-            print(f"[MISSION] FAILED - Exception: {e}")
+            print(f"❌ Timed mission failed: {e}")
             self.current_mission = None
-            return False
-
-    async def emergency_disarm(self, *, confirm_emergency=False):
-        """Emergency disarm - SMART emergency that considers altitude to prevent crashes with mandatory confirmation."""
-        if not confirm_emergency:
-            raise Exception("❌ Emergency disarm requires explicit confirmation (confirm_emergency=True)")
-            
-        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
-            print("❌ Vehicle not connected - cannot emergency disarm.")
-            return False
-            
-        vehicle = self.connection.vehicle
-        
-        if not getattr(vehicle, "armed", False):
-            print("✅ Vehicle already disarmed.")
-            return True
-
-        try:
-            print("🚨 EMERGENCY DISARM INITIATED 🚨")
-            self.flight_logger.log_emergency("emergency_disarm", "manual_command")
-            
-            # CHECK ALTITUDE FIRST - Don't kill drone in mid-air!
-            current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
-            print(f"[EMERGENCY] Current altitude: {current_alt:.1f}m")
-            
-            if current_alt > 2.0:  # If above 2m, emergency land instead!
-                print(f"[EMERGENCY] HIGH ALTITUDE - Emergency landing instead of disarm")
-                self.flight_logger.log_emergency("emergency_land_high_altitude", f"altitude_{current_alt:.1f}m")
-                return await self.emergency_land()
-            else:
-                print("[EMERGENCY] LOW ALTITUDE - Safe to disarm")
-                # Cut throttle first for safety
-                await self.set_throttle(0)
-                print("[EMERGENCY] Cutting power")
-                vehicle.armed = False
-                
-                # Shorter timeout for emergency
-                if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 8.0, desc="emergency disarming"):
-                    print("❌ Emergency disarm timeout - vehicle may still be armed!")
-                    return False
-                    
-                print("✅ Emergency disarm successful.")
-                return True
-        except Exception as e:
-            print(f"❌ Emergency disarm failed: {e}")
-            self.flight_logger.log_emergency("emergency_disarm_failed", str(e))
             return False
 
     async def emergency_land(self):
@@ -777,10 +718,10 @@ class Controller:
             home = getattr(vehicle, "home_location", None)
             if home and not (home.lat == 0.0 and home.lon == 0.0):
                 print("🏠 Emergency RTL - returning to safe launch location")
-                return await self.rtl(wait_timeout=60.0)
+                return await self.rtl(wait_timeout=60.0, emergency_override=True)
             else:
                 print("⚠️ No valid home - forced to land at current location")
-                return await self.land(force_land_here=True, wait_timeout=30.0)
+                return await self.land(force_land_here=True, wait_timeout=30.0, emergency_override=True)
             
         except Exception as e:
             print(f"❌ Emergency land failed: {e}")
@@ -789,6 +730,7 @@ class Controller:
 
     async def force_land_here(self, *, wait_timeout=30.0):
         """Force immediate landing at current location - USE ONLY IN EMERGENCIES!"""
+        # Skip vehicle_ready check entirely for emergency force landing
         if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
             print("❌ Vehicle not connected - cannot force land.")
             return False
@@ -937,8 +879,10 @@ class Controller:
         print(f"💡 Recommendation: {recommendation} ({reason})")
         
         # Send emergency prompt to frontend
+        prompt_id = f"battery_emergency_{int(time.time() * 1000)}"  # Use milliseconds for uniqueness
         emergency_data = {
             "type": "battery_emergency",
+            "prompt_id": prompt_id,
             "battery_level": battery_level,
             "distance_to_home": distance_to_home,
             "altitude": current_alt,
@@ -948,6 +892,7 @@ class Controller:
             "timeout_seconds": 10
         }
         
+        print(f"🚨 Broadcasting emergency prompt with ID: {prompt_id}")
         await broadcast_func(json.dumps(emergency_data))
         
         # Wait for user response with 10-second timeout
@@ -961,29 +906,20 @@ class Controller:
         # Store the emergency state for response handling
         if not hasattr(self, '_emergency_prompts'):
             self._emergency_prompts = {}
-        
-        prompt_id = f"battery_emergency_{int(time.time() * 1000)}"
         self._emergency_prompts[prompt_id] = {
             "start_time": start_time,
             "timeout": timeout_seconds,
             "response": None
         }
         
-        # Send prompt ID to frontend
-        prompt_data = {
-            "type": "battery_emergency_prompt",
-            "prompt_id": prompt_id
-        }
-        await broadcast_func(json.dumps(prompt_data))
-        
-        print(f"📡 Sent emergency prompt with ID: {prompt_id}")
+        print(f"🚨 Waiting for user response to prompt {prompt_id} (timeout: {timeout_seconds}s)")
         
         # Countdown and wait for response
         while (datetime.now() - start_time).total_seconds() < timeout_seconds:
             # Check if user responded
             if prompt_id in self._emergency_prompts and self._emergency_prompts[prompt_id]["response"]:
                 user_choice = self._emergency_prompts[prompt_id]["response"]
-                print(f"✅ User responded: {user_choice}")
+                print(f"✅ User responded with: {user_choice}")
                 break
                 
             # Send countdown update
@@ -996,10 +932,6 @@ class Controller:
             await broadcast_func(json.dumps(countdown_data))
             
             await asyncio.sleep(0.5)  # Check every 500ms
-        
-        # Clean up prompt data
-        if prompt_id in self._emergency_prompts:
-            del self._emergency_prompts[prompt_id]
         
         # Execute chosen action
         if user_choice == "LAND":
@@ -1021,20 +953,40 @@ class Controller:
     
     def handle_battery_emergency_response(self, prompt_id: str, choice: str) -> bool:
         """Handle user response to battery emergency prompt."""
-        print(f"🔄 Processing emergency response: prompt_id={prompt_id}, choice={choice}")
+        print(f"🚨 Attempting to handle emergency response: prompt_id={prompt_id}, choice={choice}")
         
         if not hasattr(self, '_emergency_prompts'):
-            print("❌ No emergency prompts system initialized")
+            print(f"❌ No emergency prompts tracking available")
             return False
             
         if prompt_id not in self._emergency_prompts:
-            print(f"❌ Prompt ID {prompt_id} not found or expired")
+            print(f"❌ Prompt ID {prompt_id} not found. Available prompts: {list(self._emergency_prompts.keys())}")
+            # Don't return False immediately - the user might have responded after timeout
+            # but we should still log their choice for future reference
+            print(f"⚠️ User choice '{choice}' noted but prompt already expired/processed")
             return False
             
         if choice not in ["RTL", "LAND"]:
             print(f"❌ Invalid choice: {choice}")
             return False
+        
+        # Check if prompt has already been responded to
+        if self._emergency_prompts[prompt_id]["response"]:
+            print(f"⚠️ Prompt {prompt_id} already has response: {self._emergency_prompts[prompt_id]['response']}")
+            return False
             
         self._emergency_prompts[prompt_id]["response"] = choice
-        print(f"✅ Emergency response recorded: {choice}")
+        print(f"✅ Emergency response received and recorded: {choice}")
+        
+        # Clean up the prompt after successful response (delayed cleanup)
+        import asyncio
+        async def cleanup_prompt():
+            await asyncio.sleep(2)  
+            if prompt_id in self._emergency_prompts:
+                del self._emergency_prompts[prompt_id]
+                print(f"🧹 Cleaned up prompt {prompt_id}")
+        
+        # Schedule cleanup but don't wait for it
+        asyncio.create_task(cleanup_prompt())
+        
         return True

@@ -142,7 +142,7 @@ export default function DroneDashboard() {
         recommendation={batteryEmergency.recommendation}
         reason={batteryEmergency.reason}
         timeoutSeconds={batteryEmergency.timeoutSeconds}
-        promptId={batteryEmergency.promptId}
+        promptId={batteryEmergency.promptId || ''}
         onChoice={handleBatteryEmergencyChoice}
       />
     </div>

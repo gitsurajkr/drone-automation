@@ -6,8 +6,8 @@ import logging
 class SafetyConfig:
     """Comprehensive safety configuration for drone operations."""
     
-    # Flight limits - Updated for more practical operations
-    MAX_ALTITUDE = 50.0         # meters - increased for better testing
+    # Flight limits - Configured for real drone operations
+    MAX_ALTITUDE = 50.0         # meters - safe operational ceiling
     MIN_ALTITUDE = 0.5          # meters - minimum takeoff height
     MAX_FLIGHT_TIME = 600       # seconds - 10 minutes max flight
     MAX_HORIZONTAL_DISTANCE = 200  # meters from home - increased range
@@ -95,32 +95,30 @@ class SafetyConfig:
         return True, "Flight duration within safe limits"
     
     @classmethod
-    def validate_gps_integrity(cls, gps_data: Dict[str, Any], is_sitl: bool = False) -> tuple[bool, str]:
-        """Validate GPS integrity to prevent spoofing/interference crashes.
+    def validate_gps_integrity(cls, gps_data: Dict[str, Any]) -> tuple[bool, str]:
+        """Validate GPS integrity for real drone operations with strict requirements.
         
         Args:
             gps_data: GPS telemetry data containing 'eph' and 'groundspeed'
-            is_sitl: If True, use relaxed validation for SITL testing
             
         Returns:
             tuple[bool, str]: (is_valid, error_message)
         """
-        # Check HDOP (GPS accuracy) with SITL-aware limits
+        # Check HDOP (GPS accuracy) - strict requirements for real drone
         eph = gps_data.get('eph', 999)  # Horizontal accuracy
-        max_hdop = 200.0 if is_sitl else 2.0  # SITL has poor simulated GPS
+        max_hdop = 2.0  # Strict requirement for real drone safety
         
         if eph > max_hdop:
             return False, f"GPS accuracy poor: HDOP {eph} (need <{max_hdop})"
         
         # Check for impossible speeds (GPS spoofing detection)
         groundspeed = gps_data.get('groundspeed', 0)
-        max_speed = 100 if is_sitl else 50  # SITL can have quirky speeds
+        max_speed = 50  # Maximum reasonable speed for real drone operations
         
-        if groundspeed > max_speed:  # Adjusted for SITL vs hardware
+        if groundspeed > max_speed:
             return False, f"GPS may be spoofed: impossible speed {groundspeed} m/s"
         
-        gps_type = "SITL simulated" if is_sitl else "hardware"
-        return True, f"GPS integrity OK ({gps_type})"
+        return True, f"GPS integrity OK (real drone hardware)"
 
     @classmethod
     def validate_battery_under_load(cls, voltage_idle: float, voltage_load: float) -> tuple[bool, str]:
