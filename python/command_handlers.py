@@ -65,6 +65,26 @@ async def handle_arm(conn) -> Dict[str, Any]:
         return {"status": "error", "detail": f"arm exception: {e}"}
 
 
+async def handle_arm_and_takeoff(conn, altitude: float = 5.0) -> Dict[str, Any]:
+    """Handle arm and takeoff command to prevent auto-disarm timeout."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Validate altitude
+        if altitude <= 0 or altitude > 100:
+            return {"status": "error", "detail": f"altitude must be between 0 and 100m (got {altitude}m)"}
+        
+        result = await controller.arm_and_takeoff(altitude)
+        return {
+            "status": "ok" if result else "error", 
+            "detail": f"arm and takeoff to {altitude}m successful" if result else "arm and takeoff failed"
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"arm and takeoff exception: {e}"}
+
+
 async def handle_disarm(conn) -> Dict[str, Any]:
     # Handle disarm command
     controller = getattr(conn, "controller", None)
@@ -272,6 +292,7 @@ COMMAND_HANDLERS = {
     "reconnect": handle_reconnect,
     "status": handle_status,
     "arm": handle_arm,
+    "arm_and_takeoff": handle_arm_and_takeoff,
     "disarm": handle_disarm,
     "emergency_disarm": handle_emergency_disarm,
     "message": handle_message,
@@ -350,6 +371,15 @@ async def execute_command(
             result = await handler(drone_connected)
         elif command_type in ["arm", "disarm", "emergency_disarm", "land", "rtl", "mission_status", "release_throttle", "emergency_land", "verify_home", "force_land_here"]:
             result = await handler(conn)
+        elif command_type == "arm_and_takeoff":
+            # Handle arm + takeoff with optional altitude parameter
+            altitude = 5.0  # default altitude
+            if payload and "altitude" in payload:
+                try:
+                    altitude = float(payload["altitude"])
+                except (ValueError, TypeError):
+                    return {"status": "error", "detail": "invalid altitude parameter"}
+            result = await handler(conn, altitude)
         elif command_type == "takeoff":
             # Handle takeoff with optional altitude parameter
             altitude = 10.0  # default altitude

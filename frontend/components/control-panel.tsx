@@ -55,6 +55,9 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
       } else if (command === "arm") {
         toast.success("Drone ARMED - Ready for flight")
         setLocalArmed(true)
+      } else if (command === "arm_and_takeoff") {
+        toast.success("🚁 ARM + TAKEOFF - Preventing auto-disarm timeout")
+        setLocalArmed(true)
       } else if (command === "disarm") {
         toast.success("Drone DISARMED - Safe state")
         setLocalArmed(false)
@@ -92,6 +95,8 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
         toast.error(`Disconnect failed: ${errorMsg}`)
       } else if (command === "arm") {
         toast.error(`Failed to ARM: ${errorMsg}`)
+      } else if (command === "arm_and_takeoff") {
+        toast.error(`ARM + TAKEOFF failed: ${errorMsg}`)
       } else if (command === "disarm") {
         toast.error(`Failed to DISARM: ${errorMsg}`)
       } else if (command === "emergency_disarm") {
@@ -177,6 +182,16 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
             variant={localArmed ? "destructive" : "default"}
           >
             {localArmed ? "DISARM" : "ARM"}
+          </Button>
+
+          <Button
+            onClick={() => handleCommandAsync("arm_and_takeoff", { altitude: 5.0 })}
+            disabled={connProcessing || !droneConnected || localArmed}
+            variant="default"
+            className="bg-blue-600 hover:bg-blue-700"
+            title="Arm drone and immediately takeoff to prevent auto-disarm timeout"
+          >
+            🚁 ARM + TAKEOFF
           </Button>
 
           <Button

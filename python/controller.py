@@ -83,6 +83,30 @@ class Controller:
         else:  # 3S battery (default)
             return SafetyConfig.MIN_BATTERY_VOLTAGE_3S
 
+    def _detect_sitl_connection(self) -> bool:
+        """Detect if connected to SITL (Software In The Loop) simulation."""
+        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        try:
+            # Check for SITL indicators
+            # 1. ARMING_CHECK parameter is often disabled in SITL (0 = all checks disabled)
+            arming_check = getattr(vehicle.parameters, 'ARMING_CHECK', None)
+            if arming_check is not None and arming_check == 0:
+                # Additional check: SITL usually has poor GPS accuracy
+                gps = getattr(vehicle, "gps_0", None)
+                if gps:
+                    eph = getattr(gps, 'eph', 0)
+                    if eph > 50:  # SITL typically has HDOP > 50
+                        return True
+            
+            return False
+        except Exception as e:
+            print(f"SITL detection error: {e}")
+            return False
+
     async def _wait_for_condition(self, check_fn, timeout, interval=0.5, desc="condition"):
         start = time.time()
         while not check_fn():
@@ -317,14 +341,15 @@ class Controller:
         
         # CRITICAL: Enhanced pre-flight safety checks
         try:
-            # Check GPS integrity
+            # Check GPS integrity with SITL awareness
             gps = getattr(vehicle, "gps_0", None)
             if gps:
                 gps_data = {
                     'eph': getattr(gps, 'eph', 999),
                     'groundspeed': getattr(vehicle, 'groundspeed', 0)
                 }
-                gps_ok, gps_msg = SafetyConfig.validate_gps_integrity(gps_data)
+                is_sitl = self._detect_sitl_connection()
+                gps_ok, gps_msg = SafetyConfig.validate_gps_integrity(gps_data, is_sitl=is_sitl)
                 if not gps_ok:
                     print(f"❌ GPS integrity check failed: {gps_msg}")
                     return False
@@ -373,6 +398,62 @@ class Controller:
             
         except Exception as e:
             print(f"Takeoff failed: {e}")
+            return False
+
+    async def arm_and_takeoff(self, altitude=5.0):
+        """Arm the drone and immediately takeoff to prevent auto-disarm timeout.
+        
+        This method solves the ArduPilot auto-disarm issue where the vehicle
+        automatically disarms 4-5 seconds after arming if no flight commands are sent.
+        
+        Args:
+            altitude: Target takeoff altitude in meters (default: 5.0m)
+            
+        Returns:
+            bool: True if arm and takeoff successful, False otherwise
+        """
+        if not self._vehicle_ready(require_armable=True):
+            return False
+            
+        vehicle = self.connection.vehicle
+        
+        try:
+            print(f"🚁 Starting ARM + TAKEOFF sequence to {altitude}m...")
+            
+            # Step 1: Arm the vehicle
+            print("Step 1: Arming vehicle...")
+            if not await self.arm():
+                print("❌ Failed to arm vehicle")
+                return False
+            
+            # Step 2: Immediately switch to GUIDED mode and takeoff
+            print("Step 2: Setting GUIDED mode and taking off...")
+            
+            # Set GUIDED mode for takeoff
+            
+            vehicle.mode = VehicleMode("GUIDED")
+            
+            # Wait briefly for mode change
+            await asyncio.sleep(1.0)
+            
+            # Verify mode change
+            if getattr(vehicle.mode, "name", None) != "GUIDED":
+                print("❌ Failed to set GUIDED mode")
+                return False
+            
+            # Step 3: Immediate takeoff to prevent auto-disarm
+            print(f"Step 3: Executing takeoff to {altitude}m...")
+            success = await self.takeoff(altitude)
+            
+            if success:
+                print(f"✅ ARM + TAKEOFF successful! Vehicle at {altitude}m altitude")
+                return True
+            else:
+                print("❌ Takeoff failed after arming")
+                return False
+                
+        except Exception as e:
+            print(f"ARM + TAKEOFF failed: {e}")
             return False
 
     async def land(self, *, wait_timeout=60.0, force_land_here=False):

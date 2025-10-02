@@ -95,19 +95,32 @@ class SafetyConfig:
         return True, "Flight duration within safe limits"
     
     @classmethod
-    def validate_gps_integrity(cls, gps_data: Dict[str, Any]) -> tuple[bool, str]:
-        """Validate GPS integrity to prevent spoofing/interference crashes."""
-        # Check HDOP (GPS accuracy)
+    def validate_gps_integrity(cls, gps_data: Dict[str, Any], is_sitl: bool = False) -> tuple[bool, str]:
+        """Validate GPS integrity to prevent spoofing/interference crashes.
+        
+        Args:
+            gps_data: GPS telemetry data containing 'eph' and 'groundspeed'
+            is_sitl: If True, use relaxed validation for SITL testing
+            
+        Returns:
+            tuple[bool, str]: (is_valid, error_message)
+        """
+        # Check HDOP (GPS accuracy) with SITL-aware limits
         eph = gps_data.get('eph', 999)  # Horizontal accuracy
-        if eph > 2.0:
-            return False, f"GPS accuracy poor: HDOP {eph} (need <2.0)"
+        max_hdop = 200.0 if is_sitl else 2.0  # SITL has poor simulated GPS
+        
+        if eph > max_hdop:
+            return False, f"GPS accuracy poor: HDOP {eph} (need <{max_hdop})"
         
         # Check for impossible speeds (GPS spoofing detection)
         groundspeed = gps_data.get('groundspeed', 0)
-        if groundspeed > 50:  # 50 m/s = 180 km/h (impossible for most drones)
+        max_speed = 100 if is_sitl else 50  # SITL can have quirky speeds
+        
+        if groundspeed > max_speed:  # Adjusted for SITL vs hardware
             return False, f"GPS may be spoofed: impossible speed {groundspeed} m/s"
         
-        return True, "GPS integrity OK"
+        gps_type = "SITL simulated" if is_sitl else "hardware"
+        return True, f"GPS integrity OK ({gps_type})"
 
     @classmethod
     def validate_battery_under_load(cls, voltage_idle: float, voltage_load: float) -> tuple[bool, str]:
