@@ -276,19 +276,25 @@ class Controller:
             print(f"[DISARM] FAILED - Exception: {e}")
             return False
 
-    async def emergency_disarm(self):
-        """Emergency disarm - SMART emergency that considers altitude to prevent crashes."""
+    async def emergency_disarm(self, *, confirm_emergency=False):
+        """Emergency disarm - SMART emergency that considers altitude to prevent crashes with mandatory confirmation."""
+        if not confirm_emergency:
+            raise Exception("❌ Emergency disarm requires explicit confirmation (confirm_emergency=True)")
+            
         if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
-            print("Vehicle not connected - cannot emergency disarm.")
+            print("❌ Vehicle not connected - cannot emergency disarm.")
             return False
             
         vehicle = self.connection.vehicle
         
         if not getattr(vehicle, "armed", False):
-            print("Vehicle already disarmed.")
+            print("✅ Vehicle already disarmed.")
             return True
 
         try:
+            print("🚨 EMERGENCY DISARM INITIATED 🚨")
+            self.flight_logger.log_emergency("emergency_disarm", "manual_command")
+            
             # CHECK ALTITUDE FIRST - Don't kill drone in mid-air!
             current_alt = getattr(vehicle.location.global_relative_frame, "alt", 0) if vehicle.location.global_relative_frame else 0
             print(f"[EMERGENCY] Current altitude: {current_alt:.1f}m")
@@ -303,14 +309,15 @@ class Controller:
                 await self.set_throttle(0)
                 print("[EMERGENCY] Cutting power")
                 vehicle.armed = False
-                # Shorter timeout for emergency
-                if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 5.0, desc="emergency disarming"):
-                    print("[EMERGENCY] TIMEOUT - Vehicle may still be armed")
+                # Shorter timeout for emergency (increased from 5s to 8s for better reliability)
+                if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 8.0, desc="emergency disarming"):
+                    print("❌ Emergency disarm timeout - vehicle may still be armed!")
                     return False
-                print("[EMERGENCY] SUCCESS - Vehicle disarmed")
+                print("✅ Emergency disarm successful.")
                 return True
         except Exception as e:
-            print(f"Emergency disarm failed: {e}")
+            print(f"❌ Emergency disarm failed: {e}")
+            self.flight_logger.log_emergency("emergency_disarm_failed", str(e))
             return False
 
     async def set_throttle(self, throttle_percent: float):
@@ -773,38 +780,6 @@ class Controller:
             self.current_mission = None
             return False
 
-    async def emergency_disarm(self, *, confirm_emergency=False):
-        """Emergency disarm with mandatory confirmation and logging."""
-        if not confirm_emergency:
-            raise Exception("❌ Emergency disarm requires explicit confirmation (confirm_emergency=True)")
-            
-        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
-            print("❌ Vehicle not connected - cannot emergency disarm.")
-            return False
-            
-        vehicle = self.connection.vehicle
-        
-        if not getattr(vehicle, "armed", False):
-            print("✅ Vehicle already disarmed.")
-            return True
-
-        try:
-            print("🚨 EMERGENCY DISARM INITIATED 🚨")
-            self.flight_logger.log_emergency("emergency_disarm", "manual_command")
-            
-            vehicle.armed = False
-            # Shorter timeout for emergency
-            if not await self._wait_for_condition(lambda: not getattr(vehicle, "armed", True), 8.0, desc="emergency disarming"):
-                print("❌ Emergency disarm timeout - vehicle may still be armed!")
-                return False
-                
-            print("✅ Emergency disarm successful.")
-            return True
-        except Exception as e:
-            print(f"❌ Emergency disarm failed: {e}")
-            self.flight_logger.log_emergency("emergency_disarm_failed", str(e))
-            return False
-
     async def emergency_land(self):
         """Emergency land - SMART emergency that tries RTL first if possible."""
         if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
@@ -1036,10 +1011,6 @@ class Controller:
             
             await asyncio.sleep(0.5)  # Check every 500ms
         
-        # Clean up prompt data
-        if prompt_id in self._emergency_prompts:
-            del self._emergency_prompts[prompt_id]
-        
         # Execute chosen action
         if user_choice == "LAND":
             print("🚨 User chose EMERGENCY LAND - executing immediate landing")
@@ -1084,4 +1055,16 @@ class Controller:
             
         self._emergency_prompts[prompt_id]["response"] = choice
         print(f"✅ Emergency response received and recorded: {choice}")
+        
+        # Clean up the prompt after successful response (delayed cleanup)
+        import asyncio
+        async def cleanup_prompt():
+            await asyncio.sleep(2)  
+            if prompt_id in self._emergency_prompts:
+                del self._emergency_prompts[prompt_id]
+                print(f"🧹 Cleaned up prompt {prompt_id}")
+        
+        # Schedule cleanup but don't wait for it
+        asyncio.create_task(cleanup_prompt())
+        
         return True

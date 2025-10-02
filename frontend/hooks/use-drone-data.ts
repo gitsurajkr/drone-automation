@@ -279,6 +279,7 @@ export function useDroneData() {
 
     if (!batteryEmergency.promptId) {
       console.error("❌ No prompt ID available for emergency choice");
+      toast.error('Emergency system error - no prompt ID');
       return;
     }
 
@@ -288,17 +289,25 @@ export function useDroneData() {
         choice: choice
       });
 
-      await sendCommand('battery_emergency_response', {
+      const response = await sendCommand('battery_emergency_response', {
         prompt_id: batteryEmergency.promptId,
         choice: choice
       })
 
-      console.log("✅ Emergency choice sent successfully");
+      console.log("✅ Emergency choice sent successfully", response);
       setBatteryEmergency(prev => ({ ...prev, isActive: false }))
       toast.success(`Emergency choice sent: ${choice}`)
-    } catch (error) {
+    } catch (error: any) {
       console.error("❌ Failed to send emergency choice:", error);
-      toast.error(`Failed to send emergency choice: ${error}`)
+
+      // Better error handling for expired prompts
+      const errorMsg = error?.detail || error?.message || String(error);
+      if (errorMsg.includes('expired') || errorMsg.includes('not found')) {
+        toast.error('Emergency prompt expired - action may have been taken automatically');
+        setBatteryEmergency(prev => ({ ...prev, isActive: false }));
+      } else {
+        toast.error(`Failed to send emergency choice: ${errorMsg}`);
+      }
     }
   }
 

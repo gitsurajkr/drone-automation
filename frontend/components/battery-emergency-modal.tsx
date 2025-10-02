@@ -14,7 +14,8 @@ interface BatteryEmergencyModalProps {
     gpsfix: number
     recommendation: string
     reason: string
-    remainingSeconds: number
+    timeoutSeconds: number
+    promptId: string
     onChoice: (choice: 'RTL' | 'LAND') => void
 }
 
@@ -26,14 +27,38 @@ export function BatteryEmergencyModal({
     gpsfix,
     recommendation,
     reason,
-    remainingSeconds,
+    timeoutSeconds,
+    promptId,
     onChoice
 }: BatteryEmergencyModalProps) {
-    const [countdown, setCountdown] = useState(remainingSeconds)
+    const [remainingTime, setRemainingTime] = useState(timeoutSeconds)
+    const [choiceMade, setChoiceMade] = useState(false)
 
     useEffect(() => {
-        setCountdown(remainingSeconds)
-    }, [remainingSeconds])
+        if (!isOpen) {
+            setRemainingTime(timeoutSeconds)
+            setChoiceMade(false)
+            return
+        }
+
+        const timer = setInterval(() => {
+            setRemainingTime((prev) => {
+                if (prev <= 1) {
+                    clearInterval(timer)
+                    return 0
+                }
+                return prev - 1
+            })
+        }, 1000)
+
+        return () => clearInterval(timer)
+    }, [isOpen, timeoutSeconds])
+
+    const handleChoice = (choice: 'RTL' | 'LAND') => {
+        if (choiceMade) return // Prevent multiple clicks
+        setChoiceMade(true)
+        onChoice(choice)
+    }
 
     if (!isOpen) return null
 
@@ -64,7 +89,7 @@ export function BatteryEmergencyModal({
                         {batteryLevel}% Battery
                     </div>
                     <div className="text-lg font-semibold text-gray-700">
-                        Auto-RTL in {Math.ceil(countdown)}s
+                        Auto-RTL in {Math.ceil(remainingTime)}s
                     </div>
                 </CardHeader>
 
@@ -102,27 +127,33 @@ export function BatteryEmergencyModal({
                     {/* Action Buttons */}
                     <div className="grid grid-cols-2 gap-4">
                         <Button
-                            onClick={() => onChoice('RTL')}
-                            className={`h-16 text-lg font-bold flex flex-col items-center gap-1 ${recommendation === 'RTL'
+                            onClick={() => handleChoice('RTL')}
+                            disabled={choiceMade}
+                            className={`h-16 text-lg font-bold flex flex-col items-center gap-1 ${choiceMade
+                                ? 'bg-gray-400 cursor-not-allowed'
+                                : recommendation === 'RTL'
                                     ? 'bg-green-600 hover:bg-green-700 border-2 border-green-400'
                                     : 'bg-blue-600 hover:bg-blue-700'
                                 }`}
                         >
                             <Home className="h-6 w-6" />
-                            <span>Return to Launch</span>
-                            {recommendation === 'RTL' && <span className="text-xs">(Recommended)</span>}
+                            <span>{choiceMade ? 'Processing...' : 'Return to Launch'}</span>
+                            {!choiceMade && recommendation === 'RTL' && <span className="text-xs">(Recommended)</span>}
                         </Button>
 
                         <Button
-                            onClick={() => onChoice('LAND')}
-                            className={`h-16 text-lg font-bold flex flex-col items-center gap-1 ${recommendation === 'LAND'
+                            onClick={() => handleChoice('LAND')}
+                            disabled={choiceMade}
+                            className={`h-16 text-lg font-bold flex flex-col items-center gap-1 ${choiceMade
+                                ? 'bg-gray-400 cursor-not-allowed'
+                                : recommendation === 'LAND'
                                     ? 'bg-green-600 hover:bg-green-700 border-2 border-green-400'
                                     : 'bg-orange-600 hover:bg-orange-700'
                                 }`}
                         >
                             <Navigation className="h-6 w-6" />
-                            <span>Land Here</span>
-                            {recommendation === 'LAND' && <span className="text-xs">(Recommended)</span>}
+                            <span>{choiceMade ? 'Processing...' : 'Land Here'}</span>
+                            {!choiceMade && recommendation === 'LAND' && <span className="text-xs">(Recommended)</span>}
                         </Button>
                     </div>
 
@@ -130,12 +161,12 @@ export function BatteryEmergencyModal({
                     <div className="mt-6">
                         <div className="flex justify-between text-sm text-gray-600 mb-1">
                             <span>Auto-RTL countdown</span>
-                            <span>{Math.ceil(countdown)}s remaining</span>
+                            <span>{Math.ceil(remainingTime)}s remaining</span>
                         </div>
                         <div className="w-full bg-gray-200 rounded-full h-3">
                             <div
                                 className="bg-red-500 h-3 rounded-full transition-all duration-500 ease-linear"
-                                style={{ width: `${(countdown / 8) * 100}%` }}
+                                style={{ width: `${(remainingTime / timeoutSeconds) * 100}%` }}
                             />
                         </div>
                     </div>
