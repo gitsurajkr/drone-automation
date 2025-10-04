@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timedelta
-from dronekit import VehicleMode, LocationGlobalRelative
+from dronekit import VehicleMode
 from safety_config import SafetyConfig, FlightLogger
 from typing import Optional, Dict, Any, Tuple
 
@@ -84,7 +84,7 @@ class Controller:
         return True
 
     def _get_min_battery_voltage(self, current_voltage: float) -> float:
-        """Determine minimum safe voltage based on current voltage (auto-detect battery type)."""
+        # Determine minimum safe voltage based on current voltage (auto-detect battery type)
         if current_voltage > 20:  # 6S battery
             return SafetyConfig.MIN_BATTERY_VOLTAGE_6S
         elif current_voltage > 13:  # 4S battery  
@@ -149,15 +149,15 @@ class Controller:
             return False
 
     async def arm_and_takeoff(self, altitude: float = 5.0, *, wait_mode_timeout=10.0, wait_arm_timeout=20.0) -> bool:
-        """Arm vehicle and immediately takeoff - prevents auto-disarm timeout."""
+        # Arm vehicle and immediately takeoff - prevents auto-disarm timeout
         print(f"[ARM+TAKEOFF] Starting sequence to {altitude}m")
         
-        # Step 1: Arm the vehicle
+        # Arm the vehicle
         if not await self.arm(wait_mode_timeout=wait_mode_timeout, wait_arm_timeout=wait_arm_timeout):
             print("[ARM+TAKEOFF] FAILED - Arming unsuccessful")
             return False
         
-        # Step 2: Immediate takeoff to prevent auto-disarm
+        # Immediate takeoff to prevent auto-disarm
         print("[ARM+TAKEOFF] Proceeding to takeoff (preventing auto-disarm)")
         await asyncio.sleep(0.5)  # Brief pause to ensure arming is stable
         
@@ -200,7 +200,7 @@ class Controller:
             return False
 
     async def emergency_disarm(self, *, confirm_emergency=False):
-        """Emergency disarm - SMART emergency that considers altitude to prevent crashes with mandatory confirmation."""
+        # emergency disarm with strict confirmation and safety checks.
         if not confirm_emergency:
             raise Exception("❌ Emergency disarm requires explicit confirmation (confirm_emergency=True)")
             
@@ -244,11 +244,8 @@ class Controller:
             return False
 
     async def set_throttle(self, throttle_percent: float):
-        """
-        Set throttle percentage for manual control during arming/flight.
-        Args:
-            throttle_percent: Throttle percentage (0-100)
-        """
+        # Set throttle percentage for manual control during arming/flight.
+
         if not self._vehicle_ready(require_armable=False):
             return False
             
@@ -342,15 +339,8 @@ class Controller:
             return False
 
     async def takeoff(self, altitude, *, wait_timeout=30.0):
-        """Safely take off to specified altitude.
-        
-        Args:
-            altitude: Target altitude in meters (relative to home)
-            wait_timeout: Maximum time to wait for takeoff completion
-            
-        Returns:
-            bool: True if takeoff successful, False otherwise
-        """
+        # Safely take off to specified altitude.
+    
         if not self._vehicle_ready(require_armable=False):
             return False
             
@@ -440,13 +430,8 @@ class Controller:
             return False
 
     async def land(self, *, wait_timeout=60.0, force_land_here=False, emergency_override=False):
-        """Safely land the vehicle - defaults to RTL for safety unless forced.
-        
-        Args:
-            wait_timeout: Maximum time to wait for landing completion
-            force_land_here: If True, land at current location instead of RTL (DANGEROUS!)
-            emergency_override: If True, bypass battery safety checks for emergency landing
-        """
+        # Safely land the vehicle - defaults to RTL for safety unless forced.
+
         if not self._vehicle_ready(require_armable=False, emergency_override=emergency_override):
             return False
             
@@ -576,16 +561,9 @@ class Controller:
             return False
 
     async def fly_timed_mission(self, altitude: float, duration: float, broadcast_func=None) -> bool:
-        """
-        Fly at specified altitude for specified duration then RTL.
+
+        # Fly at specified altitude for specified duration then RTL.
         
-        Args:
-            altitude: Target altitude in meters
-            duration: Flight duration in seconds
-            
-        Returns:
-            bool: True if mission completed successfully
-        """
         # Validate inputs
         alt_valid, alt_msg = SafetyConfig.validate_altitude(altitude)
         if not alt_valid:

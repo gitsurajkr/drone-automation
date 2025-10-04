@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 import logging
 
 class SafetyConfig:
-    """Comprehensive safety configuration for drone operations."""
+    # Safety configuration for drone operations
     
     # Flight limits - Configured for real drone operations
     MAX_ALTITUDE = 50.0         # meters - safe operational ceiling
@@ -33,7 +33,7 @@ class SafetyConfig:
     
     @classmethod
     def validate_takeoff_conditions(cls, vehicle_data: Dict[str, Any]) -> tuple[bool, list[str]]:
-        """Validate all conditions are safe for takeoff."""
+        # Validate all conditions are safe for takeoff
         issues = []
         
         # Battery checks
@@ -87,7 +87,7 @@ class SafetyConfig:
     
     @classmethod
     def validate_flight_time(cls, duration: float) -> tuple[bool, str]:
-        """Validate requested flight duration is safe."""
+        # Validate requested flight duration is safe
         if duration <= 0:
             return False, "Flight duration must be positive"
         if duration > cls.MAX_FLIGHT_TIME:
@@ -96,16 +96,9 @@ class SafetyConfig:
     
     @classmethod
     def validate_gps_integrity(cls, gps_data: Dict[str, Any]) -> tuple[bool, str]:
-        """Validate GPS integrity for real drone operations with strict requirements.
-        
-        Args:
-            gps_data: GPS telemetry data containing 'eph' and 'groundspeed'
-            
-        Returns:
-            tuple[bool, str]: (is_valid, error_message)
-        """
+
         # Check HDOP (GPS accuracy) - strict requirements for real drone
-        eph = gps_data.get('eph', 999)  # Horizontal accuracy
+        eph = gps_data.get('eph', 999)  # this means gps accuracy is unknown
         max_hdop = 2.0  # Strict requirement for real drone safety
         
         if eph > max_hdop:
@@ -127,16 +120,15 @@ class SafetyConfig:
             return True, "Battery load test skipped"
             
         voltage_drop = voltage_idle - voltage_load
-        if voltage_drop > 0.8:  # 0.8V drop indicates very weak battery
+        if voltage_drop > 0.8:  
             return False, f"Battery weak under load: {voltage_drop:.1f}V drop"
-        elif voltage_drop > 0.5:  # 0.5V drop indicates marginal battery
+        elif voltage_drop > 0.5:  
             return False, f"Battery marginal under load: {voltage_drop:.1f}V drop"
         
         return True, f"Battery strong under load: {voltage_drop:.1f}V drop"
 
     @classmethod
     def get_emergency_actions(cls) -> list[str]:
-        """Get list of available emergency actions."""
         return [
             "emergency_disarm",
             "emergency_land", 
@@ -145,7 +137,7 @@ class SafetyConfig:
         ]
 
 class FlightLogger:
-    """Logger for flight operations and safety events."""
+    # Logger for flight operations and safety events.
     
     def __init__(self):
         self.logger = logging.getLogger('drone_safety')
@@ -158,21 +150,16 @@ class FlightLogger:
         self.logger.addHandler(handler)
     
     def log_takeoff(self, altitude: float, conditions: Dict[str, Any]):
-        """Log takeoff event with conditions."""
         self.logger.info(f"TAKEOFF: altitude={altitude}m, conditions={conditions}")
     
     def log_landing(self, location: Optional[Dict[str, Any]] = None):
-        """Log landing event."""
         self.logger.info(f"LANDING: location={location}")
     
     def log_rtl(self, reason: str = "manual"):
-        """Log return to launch event.""" 
         self.logger.info(f"RTL: reason={reason}")
     
     def log_emergency(self, action: str, reason: str):
-        """Log emergency action."""
         self.logger.error(f"EMERGENCY: action={action}, reason={reason}")
     
     def log_safety_violation(self, violation: str, data: Dict[str, Any]):
-        """Log safety violation."""
         self.logger.warning(f"SAFETY_VIOLATION: {violation}, data={data}")

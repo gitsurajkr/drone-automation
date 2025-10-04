@@ -1,6 +1,3 @@
-# Command handlers for drone control operations
-
-
 import json
 import time
 from typing import Dict, Any, Optional
@@ -66,7 +63,7 @@ async def handle_arm(conn) -> Dict[str, Any]:
 
 
 async def handle_arm_and_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
-    """Handle arm and takeoff command to prevent auto-disarm timeout."""
+    # Handle arm and takeoff command to prevent auto-disarm timeout
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -109,7 +106,7 @@ async def handle_message(payload: dict, broadcast_func) -> Dict[str, Any]:
 
 
 async def handle_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
-    """Handle takeoff command."""
+    # Handle takeoff command
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -127,7 +124,7 @@ async def handle_takeoff(conn, altitude: float = 10.0) -> Dict[str, Any]:
 
 
 async def handle_land(conn, payload: dict = None) -> Dict[str, Any]:
-    """Handle land command - defaults to RTL for safety."""
+    # Handle land command - defaults to RTL for safety.
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -152,7 +149,7 @@ async def handle_land(conn, payload: dict = None) -> Dict[str, Any]:
         return {"status": "error", "detail": f"landing exception: {e}"}
 
 async def handle_force_land_here(conn) -> Dict[str, Any]:
-    """Handle force land here command - DANGEROUS, lands at current location."""
+    # Handle force land here command - DANGEROUS, lands at current location
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -166,7 +163,7 @@ async def handle_force_land_here(conn) -> Dict[str, Any]:
 
 
 async def handle_emergency_disarm(conn) -> Dict[str, Any]:
-    """Handle emergency disarm command with mandatory confirmation."""
+    # Handle emergency disarm command with mandatory confirmation
     controller = getattr(conn, "controller", None)
     if controller is None:
         return {"status": "error", "detail": "no controller available"}
@@ -329,7 +326,6 @@ async def handle_battery_emergency_response(conn, payload: dict) -> Dict[str, An
         return {"status": "error", "detail": f"battery emergency response exception: {e}"}
 
 
-# Command registry - maps command types to their handlers
 COMMAND_HANDLERS = {
     "connect": handle_connect,
     "disconnect": handle_disconnect,
