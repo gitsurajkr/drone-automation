@@ -1,6 +1,7 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import http from 'http'
 const PYTHON_WS_URL = 'ws://localhost:8765';
+//  make i/p box -> connection string and port 
 const NODE_WS_PORT = 4001; // Changed to avoid conflict
 
 const wss = new WebSocketServer({ port: NODE_WS_PORT });
