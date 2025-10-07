@@ -75,17 +75,13 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
     const [isDrawing, setIsDrawing] = useState(false)
     const isDrawingRef = useRef(false) // Use ref to avoid closure issues
     const [isFullscreen, setIsFullscreen] = useState(false)
-    const [generatedWaypoints, setGeneratedWaypoints] = useState<DrawnWaypoint[]>([])
     const polylineRef = useRef<any>(null)
     const waypointMarkersRef = useRef<any[]>([])
     const mapClickListenerRef = useRef<any>(null)
     const [mapsLoadedError, setMapsLoadedError] = useState<string | null>(null)
-    const gpsTrailRef = useRef<any>(null)
-    const [gpsTrail, setGpsTrail] = useState<{lat: number, lng: number}[]>([])
     const animationRequestRef = useRef<number | null>(null)
     const lastDronePositionRef = useRef<{lat: number, lng: number} | null>(null)
     const isTakeoffActive = takeoffProgress?.status === 'started'
-    const takeoffActive = (typeof (arguments[0]) !== 'undefined' && (arguments[0] as any).takeoffProgress) ? false : false
 
     // Initialize Google Maps
     useEffect(() => {
@@ -191,17 +187,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
 
                 droneMarkerRef.current = marker
 
-                // Initialize GPS trail polyline with more visible styling
-                gpsTrailRef.current = new window.google.maps.Polyline({
-                    path: [],
-                    strokeColor: "#ff6b35", // Orange color for better visibility
-                    strokeOpacity: 0.9,
-                    strokeWeight: 4, // Thicker line
-                    geodesic: true,
-                    zIndex: 1000, // Ensure it's above other elements
-                    map: map
-                })
-
+         
                 // Map click handler for drawing mode
                 mapClickListenerRef.current = map.addListener("click", (e: any) => {
                     console.log("[Sky Navigator] Map clicked, isDrawing:", isDrawingRef.current)
@@ -242,10 +228,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
                 polylineRef.current.setMap(null)
                 polylineRef.current = null
             }
-            if (gpsTrailRef.current) {
-                gpsTrailRef.current.setMap(null)
-                gpsTrailRef.current = null
-            }
+           
 
             waypointMarkersRef.current.forEach((m) => m.setMap && m.setMap(null))
             waypointMarkersRef.current = []
@@ -383,11 +366,6 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
         waypointMarkersRef.current = []
     }
 
-    const clearGpsTrail = () => {
-        setGpsTrail([])
-        console.log("[GPS Trail] Cleared GPS trail")
-        toast.success("GPS trail cleared")
-    }
 
     const startMission = async () => {
         // Validation checks before starting mission
@@ -507,7 +485,8 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
 
         const startPosition = marker.getPosition()
         if (!startPosition) {
-            marker.setPosition(targetPosition)
+            // Use explicit LatLng to avoid any LatLngLiteral mismatch
+            marker.setPosition(new window.google.maps.LatLng(targetPosition.lat, targetPosition.lng))
             return
         }
 
@@ -532,7 +511,8 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
             const currentLat = startLat + deltaLat * easeProgress
             const currentLng = startLng + deltaLng * easeProgress
             
-            marker.setPosition({ lat: currentLat, lng: currentLng })
+            // Use explicit LatLng to ensure correct API behavior
+            marker.setPosition(new window.google.maps.LatLng(currentLat, currentLng))
             
             if (progress < 1) {
                 animationRequestRef.current = requestAnimationFrame(animate)
@@ -545,19 +525,6 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
         animationRequestRef.current = requestAnimationFrame(animate)
     }
 
-    // Update GPS trail
-    const updateGpsTrail = (newPosition: {lat: number, lng: number}) => {
-        setGpsTrail(prevTrail => {
-            const newTrail = [...prevTrail, newPosition]
-            // Keep only last 100 positions for performance
-            if (newTrail.length > 100) {
-                newTrail.shift()
-            }
-            // Log trail update for debugging
-            console.log(`[GPS Trail] Updated trail: ${newTrail.length} points, latest: ${newPosition.lat}, ${newPosition.lng}`)
-            return newTrail
-        })
-    }
 
     // Update drone marker position & rotation when droneData changes
     useEffect(() => {
@@ -573,6 +540,16 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
         // Check for valid GPS coordinates
         const hasValidGps = sats >= 6 && Math.abs(lat) > 0.0001 && Math.abs(lng) > 0.0001
 
+        // Debug: log incoming GPS vs marker position
+        try {
+            const curPos = marker.getPosition()
+            if (curPos) {
+                console.debug('[Drone Marker] current marker pos:', curPos.lat(), curPos.lng())
+            }
+        } catch (e) {
+            console.debug('[Drone Marker] could not read marker position', e)
+        }
+
         // Update drone icon with proper size and rotation based on connection status
         const size = isConnected ? 40 : 30
         const droneIcon = {
@@ -583,9 +560,11 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
             optimized: false
         }
 
-        marker.setIcon(droneIcon)
+    marker.setIcon(droneIcon)
 
-        // Update position with smooth animation and GPS trail
+    console.debug('[Drone Marker] incoming GPS:', lat, lng, 'hasValidGps:', hasValidGps)
+
+        // Update position with smooth animation 
         if (hasValidGps) {
             const newPosition = { lat, lng }
             const lastPosition = lastDronePositionRef.current
@@ -595,8 +574,8 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
                 Math.abs(newPosition.lat - lastPosition.lat) > 0.0001 || 
                 Math.abs(newPosition.lng - lastPosition.lng) > 0.0001) {
                 
+                console.debug('[Drone Marker] animating to new position:', newPosition, 'lastPosition:', lastPosition)
                 animateDroneToPosition(newPosition)
-                updateGpsTrail(newPosition)
                 lastDronePositionRef.current = newPosition
             }
 
@@ -610,23 +589,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
         marker.setOpacity(isConnected ? 1.0 : 0.6)
 
     }, [droneData?.gps?.latitude, droneData?.gps?.longitude, droneData?.orientation?.heading, droneData?.satellites, isConnected, isDrawing])
-
-    // Update GPS trail polyline when trail changes
-    useEffect(() => {
-        const trail = gpsTrailRef.current
-        if (!trail) {
-            console.log("[GPS Trail] Trail polyline not initialized")
-            return
-        }
-        
-        console.log(`[GPS Trail] Updating trail path with ${gpsTrail.length} points`)
-        trail.setPath(gpsTrail)
-        
-        // Make sure the trail is visible on the map
-        if (gpsTrail.length > 0) {
-            console.log(`[GPS Trail] Trail visible with ${gpsTrail.length} points from ${gpsTrail[0].lat},${gpsTrail[0].lng} to ${gpsTrail[gpsTrail.length-1].lat},${gpsTrail[gpsTrail.length-1].lng}`)
-        }
-    }, [gpsTrail])
+    
 
     // When drawnPath state updates we must update the map polyline (map may not be ready yet)
     useEffect(() => {
@@ -678,7 +641,6 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
                             {isConnected ? "🟢 Live" : "🔴 Offline"}
                         </Badge>
                         <Badge variant="outline">Waypoints: {drawnPath.length}</Badge>
-                        <Badge variant="outline">Trail: {gpsTrail.length}</Badge>
                         {droneData?.satellites && (
                             <Badge variant={droneData.satellites >= 6 ? "default" : "destructive"}>
                                 GPS: {droneData.satellites}
@@ -826,33 +788,6 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
                         <Button
                             variant="outline"
                             size="sm"
-                            onClick={clearGpsTrail}
-                            disabled={gpsTrail.length === 0}
-                        >
-                            Clear Trail ({gpsTrail.length})
-                        </Button>
-
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                                // Add test GPS trail points for debugging
-                                const testPoints = [
-                                    { lat: 28.5245, lng: 77.5770 },
-                                    { lat: 28.5250, lng: 77.5775 },
-                                    { lat: 28.5255, lng: 77.5780 },
-                                    { lat: 28.5260, lng: 77.5785 }
-                                ]
-                                setGpsTrail(prev => [...prev, ...testPoints])
-                                toast.success("Added test GPS trail")
-                            }}
-                        >
-                            Test Trail
-                        </Button>
-
-                        <Button
-                            variant="outline"
-                            size="sm"
                             onClick={centerOnDrone}
                             disabled={!droneData?.gps || Math.abs(droneData.gps.latitude || 0) < 0.0001}
                         >
@@ -861,13 +796,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
                         </Button>
                     </div>
 
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setIsFullscreen(!isFullscreen)}
-                    >
-                        {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                    </Button>
+                   
                 </div>
 
               

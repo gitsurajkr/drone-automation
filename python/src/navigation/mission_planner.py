@@ -290,36 +290,11 @@ def interactive_mission_planner():
     
     print("Mission planner closed")
 
-def create_example_missions():
-    """Create some example missions for testing."""
-    
-    # Example 1: Square pattern
-    square_planner = MissionPlanner()
-    square_planner.add_waypoint(28.459497, 77.026638, 20)  # Start
-    square_planner.add_waypoint(28.459800, 77.026638, 20)  # North
-    square_planner.add_waypoint(28.459800, 77.027000, 20)  # East
-    square_planner.add_waypoint(28.459497, 77.027000, 20)  # South
-    square_planner.add_waypoint(28.459497, 77.026638, 20)  # Return to start
-    
-    square_planner.save_mission("example_square_mission.json")
-    print("📄 Created example_square_mission.json")
-    
-    # Example 2: Linear survey
-    survey_planner = MissionPlanner()
-    for i in range(5):
-        lat = 28.459497 + (i * 0.0001)  # Move north
-        survey_planner.add_waypoint(lat, 77.026638, 25)
-    
-    survey_planner.save_mission("example_survey_mission.json")
-    print("📄 Created example_survey_mission.json")
-
 if __name__ == "__main__":
     import sys
     
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "examples":
-            create_example_missions()
-        elif sys.argv[1] == "help":
+    if len(sys.argv) > 1: 
+        if sys.argv[1] == "help":
             print(__doc__)
         else:
             print("Usage: python mission_planner.py [examples|help]")

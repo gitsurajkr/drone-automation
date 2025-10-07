@@ -44,10 +44,19 @@ class TelemetryData:
         # }
 
         def fmt(val):
-            # Support both float and int values for rounding.
+            # Support both float and int values for rounding general numbers.
             if isinstance(val, (float, int)):
                 try:
                     return round(float(val), 2)
+                except Exception:
+                    return val
+            return val
+
+        def fmt_coord(val):
+            # Format GPS coordinates with higher precision to avoid marker drift
+            if isinstance(val, (float, int)):
+                try:
+                    return round(float(val), 6)
                 except Exception:
                     return val
             return val
@@ -62,8 +71,8 @@ class TelemetryData:
         data = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "location": {
-                "lat": fmt((loc_rel or loc_global).lat) if (loc_rel or loc_global) else None,
-                "lon": fmt((loc_rel or loc_global).lon) if (loc_rel or loc_global) else None,
+                "lat": fmt_coord((loc_rel or loc_global).lat) if (loc_rel or loc_global) else None,
+                "lon": fmt_coord((loc_rel or loc_global).lon) if (loc_rel or loc_global) else None,
                 "alt": fmt(loc_rel.alt) if loc_rel and hasattr(loc_rel, "alt") else (fmt(loc_global.alt) if loc_global and hasattr(loc_global, "alt") else None),
                 "alt_rel": fmt(loc_rel.alt) if loc_rel and hasattr(loc_rel, "alt") else None,
                 "alt_global": fmt(loc_global.alt) if loc_global and hasattr(loc_global, "alt") else None,
@@ -95,8 +104,8 @@ class TelemetryData:
             "climb_rate": fmt(vz) if vz is not None else 0.0,
             "rc_channels": rc_data if rc_data is not None else {},
             "home_position": {
-                "lat": fmt(home.lat) if home and hasattr(home, "lat") else 0.0,
-                "lon": fmt(home.lon) if home and hasattr(home, "lon") else 0.0,  
+                "lat": fmt_coord(home.lat) if home and hasattr(home, "lat") else 0.0,
+                "lon": fmt_coord(home.lon) if home and hasattr(home, "lon") else 0.0,  
                 "alt": fmt(getattr(home, "alt", getattr(home, "altitude", 0.0))) if home else 0.0
             },
             "flight_time": fmt(flight_time) if flight_time is not None else 0.0,

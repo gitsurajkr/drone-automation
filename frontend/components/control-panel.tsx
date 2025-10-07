@@ -240,20 +240,6 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
             Manual throttle override for hardware drone control
           </p>
         </div>
-
-        {/* Emergency Land */}
-        <div className="flex gap-2 items-center">
-          <Button
-            onClick={() => handleCommandAsync("emergency_land")}
-            disabled={connProcessing || pythonConnected !== true || !localArmed}
-            variant="destructive"
-            size="sm"
-            className="bg-red-600 hover:bg-red-700"
-          >
-            🚨 EMERGENCY LAND
-          </Button>
-        </div>
-
         {/* Safety Status */}
         <div className="space-y-2 border-t pt-2">
           <p className="text-sm font-medium">🛡️ Safety Status</p>
@@ -301,26 +287,11 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
             >
               🏠 Land (RTL)
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => handleCommandAsync("rtl")}
-              disabled={connProcessing || pythonConnected !== true || !localArmed}
-            >
-              🏠 Return Home
-            </Button>
           </div>
 
           {/* Advanced Landing Options */}
           <div className="flex gap-2 flex-wrap border-t pt-2">
-            <Button
-              variant="outline"
-              onClick={() => handleCommandAsync("verify_home")}
-              disabled={connProcessing || pythonConnected !== true}
-              size="sm"
-              title="Check if home location is valid for RTL"
-            >
-              📍 Verify Home
-            </Button>
+            
             <Button
               variant="destructive"
               onClick={() => {
@@ -335,31 +306,6 @@ export function ControlPanel({ onCommand, droneData, isConnected, pythonConnecte
               ⚠️ Force Land Here
             </Button>
           </div>
-        </div>
-
-        {/* Flight Controls */}
-        <div className="flex gap-2 flex-wrap">
-          <Button
-            variant="default"
-            onClick={() => handleCommandAsync("takeoff")}
-            disabled={connProcessing || pythonConnected !== true || !localArmed}
-          >
-            Takeoff
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => handleCommandAsync("land")}
-            disabled={connProcessing || pythonConnected !== true || !localArmed}
-          >
-            Land
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => handleCommandAsync("rtl")}
-            disabled={connProcessing || pythonConnected !== true || !localArmed}
-          >
-            Return Home
-          </Button>
         </div>
 
         {/* Timed Flight Mission */}

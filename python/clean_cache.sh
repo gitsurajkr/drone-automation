@@ -1,5 +1,3 @@
-#!/bin/bash
-# Clean Python Cache Script
 # Removes all __pycache__ directories and .pyc files
 
 echo "🧹 Cleaning Python cache files..."
@@ -17,6 +15,6 @@ find . -name "*.pyc" -delete 2>/dev/null || true
 # Remove .pyo files (optimized bytecode)
 find . -name "*.pyo" -delete 2>/dev/null || true
 
-echo "✅ Python cache cleanup complete!"
+echo "Python cache cleanup complete!"
 echo ""
-echo "💡 Tip: Run 'source setup_dev_env.sh' to prevent future cache creation"
+echo "Tip: Run 'source setup_dev_env.sh' to prevent future cache creation"

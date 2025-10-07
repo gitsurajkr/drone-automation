@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from dronekit import VehicleMode, LocationGlobalRelative
 from config.sitl_config import SITLConfig
-from config.config import FlightLogger, SafetyConfig  # SafetyConfig for legacy compatibility
+from config.config import FlightLogger, SafetyConfig, BatterySafetyConfig  # SafetyConfig for legacy compatibility
 from ..navigation.navigation_utils import NavigationUtils
 from ..safety.flight_safety import FlightSafetyManager
 from ..navigation.waypoint_manager import WaypointMissionManager
@@ -82,6 +82,19 @@ class Controller:
             print(f"SITL detection error: {e}")
             
         return False
+
+    def _get_min_battery_voltage(self, measured_voltage: float) -> float:
+
+        try:
+            # Use BatterySafetyConfig helper to determine min voltage for cell count
+            min_v = BatterySafetyConfig.get_min_voltage_for_cell_count(measured_voltage)
+            self.logger.debug(f"Determined min battery voltage {min_v}V for measured {measured_voltage}V")
+            return min_v
+        except Exception as e:
+            # Fallback conservative default: 3S minimum
+            fallback = SafetyConfig.MIN_BATTERY_VOLTAGE_3S if hasattr(SafetyConfig, 'MIN_BATTERY_VOLTAGE_3S') else 11.1
+            self.logger.warning(f"_get_min_battery_voltage fallback used due to error: {e}. Using {fallback}V")
+            return fallback
 
     async def setup_sitl_connection(self, connection_string: str):
         """Setup SITL-specific configuration after connection with enhanced safety."""
@@ -1057,11 +1070,7 @@ class Controller:
     # Waypoint mission methods - delegated to WaypointMissionManager
     async def execute_waypoint_mission(self, waypoints: list, takeoff_altitude: float = None, 
                                      emergency_broadcast_func=None) -> Dict[str, Any]:
-        """Execute waypoint mission using dedicated manager.
-
-        This now forwards takeoff_altitude to the manager so it can perform
-        an automatic arm-and-takeoff before following the waypoint list.
-        """
+  
         return await self.waypoint_manager.execute_mission(waypoints, takeoff_altitude, emergency_broadcast_func)
     
     def handle_waypoint_emergency_response(self, prompt_id: str, choice: str) -> bool:

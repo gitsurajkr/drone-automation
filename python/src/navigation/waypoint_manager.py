@@ -498,11 +498,11 @@ class WaypointMissionManager:
                 )
                 
                 if should_log:
-                    print(f"[WAYPOINT-{wp_num}] Progress: {distance:.1f}m to target | "
-                          f"Alt: {current_status['alt']:.1f}m | "
-                          f"Speed: {current_status['speed']:.1f}m/s | "
-                          f"Mode: {current_status['mode']} | "
-                          f"Time: {elapsed:.1f}s")
+                    # print(f"[WAYPOINT-{wp_num}] Progress: {distance:.1f}m to target | "
+                    #       f"Alt: {current_status['alt']:.1f}m | "
+                    #       f"Speed: {current_status['speed']:.1f}m/s | "
+                    #       f"Mode: {current_status['mode']} | "
+                    #       f"Time: {elapsed:.1f}s")
                     
                     self.flight_logger.log_event('waypoint_progress_update', {
                         'waypoint_number': wp_num,
