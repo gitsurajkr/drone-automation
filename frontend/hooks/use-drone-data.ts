@@ -30,6 +30,10 @@ export interface DroneData {
   heading?: number
   groundspeed?: number
   climbRate?: number
+  distanceToHome?: number
+  distanceToWaypoint?: number
+  currentWaypointIndex?: number
+  totalWaypoints?: number
   rawPayload?: any
   timestamp: number
 }
@@ -78,6 +82,7 @@ export function useDroneData() {
     remainingSeconds: 8
   })
   const wsRef = useRef<WebSocket | null>(null)
+  const [takeoffProgress, setTakeoffProgress] = useState<{ status: 'idle'|'started'|'completed'|'failed', target_altitude?: number | null, mission_id?: string | null, current_altitude?: number | null, percent?: number | null }>({ status: 'idle', target_altitude: null, mission_id: null, current_altitude: null, percent: null })
   const pendingRef = useRef<Map<string, { resolve: (value?: any) => void, reject: (err?: any) => void }>>(new Map())
 
 
@@ -143,6 +148,10 @@ export function useDroneData() {
           heading: payload.heading ?? 0,
           groundspeed: payload.groundspeed ?? 0,
           climbRate: payload.climb_rate ?? payload.velocity?.vz ?? 0,
+          distanceToHome: payload.distance_to_home ?? null,
+          distanceToWaypoint: payload.distance_to_waypoint ?? null,
+          currentWaypointIndex: payload.current_waypoint_index ?? null,
+          totalWaypoints: payload.total_waypoints ?? null,
           rawPayload: payload,
           timestamp: payload.timestamp ? new Date(payload.timestamp).getTime() : Date.now(),
         };
@@ -216,6 +225,22 @@ export function useDroneData() {
             setBatteryEmergency(prev => ({ ...prev, isActive: false }))
             const actionText = msg.action === "RTL_TIMEOUT" ? "RTL (timeout)" : msg.action
             toast.success(`Emergency action: ${actionText}`)
+          }
+          else if (msg.type === 'takeoff_progress') {
+            // takeoff progress updates: { type: 'takeoff_progress', status: 'started'|'progress'|'completed'|'failed', target_altitude, mission_id, current_altitude, percent }
+            setTakeoffProgress({
+              status: msg.status ?? 'started',
+              target_altitude: msg.target_altitude ?? null,
+              mission_id: msg.mission_id ?? null,
+              current_altitude: typeof msg.current_altitude === 'number' ? msg.current_altitude : (msg.current_altitude ? Number(msg.current_altitude) : null),
+              percent: typeof msg.percent === 'number' ? msg.percent : null,
+            })
+
+            if (msg.status === 'completed') {
+              toast.success(`Takeoff complete: ${msg.target_altitude}m`)
+            } else if (msg.status === 'failed') {
+              toast.error(`Takeoff failed`)
+            }
           }
           setLogs((prev) => [
             ...prev.slice(-99),
@@ -327,6 +352,7 @@ export function useDroneData() {
     isConnected,
     telemetryHistory,
     batteryEmergency,
+    takeoffProgress,
     sendCommand,
     handleBatteryEmergencyChoice,
     notImplemented,

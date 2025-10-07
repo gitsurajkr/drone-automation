@@ -14,7 +14,7 @@ import { Map, Grid3X3 } from "lucide-react"
 import { useState, useEffect } from "react"
 
 export default function DroneDashboard() {
-  const { droneData, alerts, logs, isConnected, telemetryHistory, batteryEmergency, sendCommand, handleBatteryEmergencyChoice } = useDroneData()
+  const { droneData, alerts, logs, isConnected, telemetryHistory, batteryEmergency, takeoffProgress, sendCommand, handleBatteryEmergencyChoice } = useDroneData()
   const [currentView, setCurrentView] = useState<"dashboard" | "map">("dashboard")
   const [pythonConnected, setPythonConnected] = useState<boolean>(false)
   const [droneConnected, setDroneConnected] = useState<boolean>(false)
@@ -129,6 +129,7 @@ export default function DroneDashboard() {
           alerts={alerts}
           logs={logs}
           isConnected={isConnected}
+          takeoffProgress={takeoffProgress}
         />
       )}
 

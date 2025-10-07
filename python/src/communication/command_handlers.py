@@ -1,34 +1,186 @@
-# Command handlers for drone control operations
-
+"""
+Command Handlers for Drone Control Operations
+Processes WebSocket commands with comprehensive error handling and logging.
+"""
 
 import json
 import time
-from typing import Dict, Any, Optional
+import logging
+import asyncio
+from typing import Dict, Any, Optional, Tuple
+from datetime import datetime
+import sys
+import os
 
-# Global command tracking for conflict detection
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, 
+                  format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('command_handlers')
+drone_logger = None
+
+# Global command tracking for conflict detection and safety
 _active_commands = {}
 _last_command_time = {}
+_command_history = []
+_command_rate_limits = {
+    'arm': 3.0,       # 2 seconds between arm attempts
+    'takeoff': 5.0,   # 5 seconds between takeoff attempts  
+    'land': 3.0,      # 3 seconds between land attempts
+    'rtl': 3.0,       # 3 seconds between RTL attempts
+    'emergency': 0.5, # 0.5 seconds for emergency commands
+    'waypoint': 1.0,  # 1 second between waypoint commands
+    'connect': 0.1    # 0.1 seconds between connect attempts (allow rapid retries)
+}
 COMMAND_TIMEOUT = 30.0  # seconds
+MAX_COMMAND_HISTORY = 100
+
+
+def _log_command(command: str, payload: Dict[str, Any], result: Dict[str, Any]):
+    """Log command execution for audit trail."""
+    log_entry = {
+        'timestamp': datetime.now().isoformat(),
+        'command': command,
+        'payload': payload,
+        'result': result,
+        'success': result.get('status') == 'ok'
+    }
+    
+    _command_history.append(log_entry)
+    
+    # Trim history
+    if len(_command_history) > MAX_COMMAND_HISTORY:
+        _command_history.pop(0)
+    
+    # Log to system logger
+    if logger:
+        if log_entry['success']:
+            logger.info(f"Command executed: {command} - {result.get('detail', 'No detail')}")
+        else:
+            logger.warning(f"Command failed: {command} - {result.get('detail', 'Unknown error')}")
+    
+    # Log to drone logger if available
+    if drone_logger:
+        if log_entry['success']:
+            drone_logger.log_flight_event('COMMAND_SUCCESS', log_entry)
+        else:
+            drone_logger.log_safety_event('COMMAND_FAILURE', log_entry, 'WARNING')
+
+
+def _validate_command_rate_limit(command: str) -> Tuple[bool, str]:
+    """Validate command is not being sent too frequently."""
+    current_time = time.time()
+    
+    # Get base command type (remove modifiers)
+    base_command = command.split('_')[0] if '_' in command else command
+    rate_limit = _command_rate_limits.get(base_command, 1.0)
+    
+    last_time = _last_command_time.get(command, 0)
+    time_since_last = current_time - last_time
+    
+    if time_since_last < rate_limit:
+        remaining = rate_limit - time_since_last
+        return False, f"Rate limited: wait {remaining:.1f}s before retry"
+    
+    _last_command_time[command] = current_time
+    return True, "Rate limit ok"
+
+
+def _validate_command_conflicts(command: str) -> Tuple[bool, str]:
+    """Check for conflicting active commands."""
+    current_time = time.time()
+    
+    # Clean up expired active commands
+    expired_commands = []
+    for cmd, start_time in _active_commands.items():
+        if current_time - start_time > COMMAND_TIMEOUT:
+            expired_commands.append(cmd)
+    
+    for cmd in expired_commands:
+        del _active_commands[cmd]
+        if logger:
+            logger.warning(f"Command timeout: {cmd}")
+    
+    # Define command conflicts
+    conflicts = {
+        'takeoff': ['land', 'rtl', 'emergency_land'],
+        'land': ['takeoff', 'rtl', 'arm'],
+        'rtl': ['takeoff', 'land', 'waypoint_mission'],
+        'arm': ['disarm', 'emergency_disarm'],
+        'disarm': ['arm', 'takeoff'],
+        'waypoint_mission': ['rtl', 'land', 'takeoff']
+    }
+    
+    # Check for conflicts
+    conflicting_commands = conflicts.get(command, [])
+    for active_cmd in _active_commands:
+        if active_cmd in conflicting_commands:
+            return False, f"Conflict with active command: {active_cmd}"
+    
+    return True, "No conflicts detected"
 
 
 async def handle_connect(start_telemetry_func, conn) -> Dict[str, Any]:
-    # Handle connect command
+    """Handle drone connection command."""
+    
+    # Mark command as active
+    _active_commands['connect'] = time.time()
+    
     try:
-        await start_telemetry_func()
-        controller = getattr(conn, "controller", None)
-        drone_connected = controller is not None and controller.vehicle is not None
+        if logger:
+            logger.info("Initiating drone connection")
         
-        if drone_connected:
-            return {
-                "status": "ok", 
-                "detail": "drone connected successfully", 
-                "drone_connected": True
-            }
-        else:
-            return {"status": "error", "detail": "drone connection failed - no vehicle detected", "drone_connected": False}
+        # Start telemetry
+        await start_telemetry_func()
+        
+        # Validate connection
+        controller = getattr(conn, "controller", None)
+        if not controller:
+            raise Exception("No controller available")
+        
+        vehicle = getattr(controller, "vehicle", None)
+        if not vehicle:
+            raise Exception("No vehicle detected after connection")
+        
+        # Additional connection validation
+        heartbeat = getattr(vehicle, "last_heartbeat", None)
+        if heartbeat and heartbeat > 5.0:
+            logger.warning(f"High heartbeat latency detected: {heartbeat:.1f}s")
+        
+        # Check basic vehicle state
+        is_armable = getattr(vehicle, "is_armable", False)
+        mode = getattr(vehicle.mode, "name", "UNKNOWN") if hasattr(vehicle, 'mode') else "UNKNOWN"
+        
+        result = {
+            "status": "ok",
+            "detail": "drone connected successfully",
+            "drone_connected": True,
+            "vehicle_mode": mode,
+            "is_armable": is_armable,
+            "heartbeat": heartbeat
+        }
+        
+        if logger:
+            logger.info(f"Connection successful: mode={mode}, armable={is_armable}")
+        
+    except asyncio.TimeoutError:
+        result = {"status": "error", "detail": "connection timeout", "drone_connected": False}
+        if logger:
+            logger.error("Connection attempt timed out")
             
     except Exception as e:
-        return {"status": "error", "detail": f"connection failed: {str(e)}", "drone_connected": False}
+        result = {"status": "error", "detail": f"connection failed: {str(e)}", "drone_connected": False}
+        if logger:
+            logger.error(f"Connection failed: {e}")
+    
+    finally:
+        # Remove from active commands
+        _active_commands.pop('connect', None)
+    
+    _log_command('connect', {}, result)
+    return result
 
 
 async def handle_disconnect(stop_telemetry_func, conn) -> Dict[str, Any]:
@@ -515,6 +667,61 @@ async def execute_command(
             result = await handler(payload, broadcast_func)
         elif command_type == "battery_emergency_response":
             result = await handler(conn, payload)
+        elif command_type == "execute_waypoint_mission":
+            # Handle waypoint mission execution
+            # The waypoints are nested in payload.payload
+            inner_payload = payload.get("payload", {}) if payload else {}
+            waypoints = inner_payload.get("waypoints", [])
+            takeoff_altitude = inner_payload.get("takeoff_altitude")
+            result = await handle_execute_waypoint_mission(conn, waypoints, takeoff_altitude, broadcast_func)
+        elif command_type in ["waypoint_mission_status", "stop_waypoint_mission"]:
+            # Commands that only need conn parameter
+            result = await handler(conn)
+        elif command_type == "set_waypoint_override":
+            override = payload.get("override", True) if payload else True
+            result = await handle_set_waypoint_override(conn, override)
+        elif command_type == "fly_to_waypoint":
+            if not payload:
+                result = {"status": "error", "detail": "missing waypoint coordinates"}
+            else:
+                lat = payload.get("latitude")
+                lon = payload.get("longitude") 
+                alt = payload.get("altitude", 20.0)
+                result = await handle_fly_to_waypoint(conn, lat, lon, alt)
+        elif command_type == "validate_waypoints":
+            waypoints = payload.get("waypoints", []) if payload else []
+            result = await handle_validate_waypoints(conn, waypoints)
+        elif command_type == "calculate_mission_stats":
+            waypoints = payload.get("waypoints", []) if payload else []
+            result = await handle_calculate_mission_stats(conn, waypoints)
+        elif command_type == "generate_grid_mission":
+            if not payload:
+                result = {"status": "error", "detail": "missing grid parameters"}
+            else:
+                result = await handle_generate_grid_mission(
+                    conn, 
+                    payload.get("start_lat"), 
+                    payload.get("start_lon"),
+                    payload.get("grid_size", 5),
+                    payload.get("spacing", 50.0),
+                    payload.get("altitude", 20.0)
+                )
+        elif command_type == "generate_circular_mission":
+            if not payload:
+                result = {"status": "error", "detail": "missing circular parameters"}
+            else:
+                result = await handle_generate_circular_mission(
+                    conn,
+                    payload.get("center_lat"),
+                    payload.get("center_lon"), 
+                    payload.get("radius_meters", 100.0),
+                    payload.get("num_points", 8),
+                    payload.get("altitude", 20.0)
+                )
+        elif command_type == "waypoint_emergency_response":
+            prompt_id = payload.get("prompt_id", "") if payload else ""
+            choice = payload.get("choice", "") if payload else ""
+            result = await handle_waypoint_emergency_response(conn, prompt_id, choice)
         else:
             result = {"status": "error", "detail": f"handler not implemented for: {command_type}"}
         
@@ -531,3 +738,292 @@ async def execute_command(
     finally:
         # Remove command from active tracking when done
         _active_commands.pop(command_type, None)
+
+
+# =============================================================================
+# WAYPOINT COMMAND HANDLERS
+# =============================================================================
+
+async def handle_execute_waypoint_mission(conn, waypoints: list, takeoff_altitude: float = None, broadcast_func=None) -> Dict[str, Any]:
+    """Handle waypoint mission execution command with emergency response capability."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Validate waypoints format
+        if not waypoints or not isinstance(waypoints, list):
+            return {"status": "error", "detail": "waypoints must be a non-empty list"}
+        
+        # Convert and validate each waypoint (support both object and array formats)
+        converted_waypoints = []
+        for i, wp in enumerate(waypoints):
+            try:
+                # Handle object format: {latitude: x, longitude: y, altitude: z}
+                if isinstance(wp, dict):
+                    lat = float(wp.get('latitude', 0))
+                    lon = float(wp.get('longitude', 0)) 
+                    alt = float(wp.get('altitude', 20))
+                # Handle array/tuple format: [lat, lon, alt]
+                elif isinstance(wp, (list, tuple)) and len(wp) >= 2:
+                    lat = float(wp[0])
+                    lon = float(wp[1])
+                    alt = float(wp[2]) if len(wp) > 2 else 20.0
+                else:
+                    return {"status": "error", "detail": f"waypoint {i+1} must be object or array with lat,lon"}
+                
+                # Validate coordinates
+                if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                    return {"status": "error", "detail": f"waypoint {i+1} has invalid coordinates"}
+                    
+                converted_waypoints.append((lat, lon, alt))
+                
+            except (ValueError, TypeError, KeyError):
+                return {"status": "error", "detail": f"waypoint {i+1} has invalid coordinate format"}
+        
+        print(f"INFO: Executing waypoint mission with {len(converted_waypoints)} waypoints")
+        print(f"INFO: Emergency broadcast function {'available' if broadcast_func else 'not available'}")
+        
+        # Execute mission with emergency broadcast capability
+        result = await controller.execute_waypoint_mission(converted_waypoints, takeoff_altitude, broadcast_func)
+        
+        return {
+            "status": "ok" if result else "error", 
+            "detail": f"waypoint mission {'completed successfully' if result else 'failed'}",
+            "waypoints_count": len(converted_waypoints)
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"waypoint mission exception: {e}"}
+
+
+async def handle_waypoint_mission_status(conn) -> Dict[str, Any]:
+    """Handle waypoint mission status query."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        mission_status = controller.get_waypoint_mission_status()
+        return {"status": "ok", "detail": "waypoint mission status", "mission_status": mission_status}
+    except Exception as e:
+        return {"status": "error", "detail": f"waypoint status exception: {e}"}
+
+
+async def handle_stop_waypoint_mission(conn) -> Dict[str, Any]:
+    """Handle stop waypoint mission command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        result = controller.stop_waypoint_mission()
+        return {
+            "status": "ok" if result else "error", 
+            "detail": "waypoint mission stopped" if result else "no active waypoint mission to stop"
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"stop waypoint mission exception: {e}"}
+
+
+async def handle_cancel_takeoff(conn) -> Dict[str, Any]:
+    """Handle request to cancel an in-progress takeoff safely."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+
+    try:
+        result = controller.cancel_takeoff()
+        return {"status": "ok" if result else "error", "detail": "cancel takeoff executed" if result else "no takeoff to cancel"}
+    except Exception as e:
+        return {"status": "error", "detail": f"cancel takeoff exception: {e}"}
+
+
+async def handle_set_waypoint_override(conn, override: bool = True) -> Dict[str, Any]:
+    """Handle set waypoint manual override command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        controller.set_waypoint_manual_override(override)
+        action = "activated" if override else "deactivated"
+        return {"status": "ok", "detail": f"waypoint manual override {action}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"waypoint override exception: {e}"}
+
+
+async def handle_fly_to_waypoint(conn, latitude: float, longitude: float, altitude: float = 20.0) -> Dict[str, Any]:
+    """Handle fly to single waypoint command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Validate coordinates
+        if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+            return {"status": "error", "detail": "invalid coordinates"}
+        
+        if altitude <= 0 or altitude > 100:
+            return {"status": "error", "detail": "altitude must be between 0 and 100 meters"}
+        
+        # Initialize waypoint system if needed
+        if not hasattr(controller, 'waypoint_mission'):
+            controller._Controller__init_waypoint_system()
+        
+        print(f"INFO: Flying to waypoint: {latitude:.6f}, {longitude:.6f}, {altitude}m")
+        success = await controller.fly_to_waypoint((latitude, longitude, altitude), 1, 1)
+        
+        return {
+            "status": "ok" if success else "error", 
+            "detail": f"waypoint {'reached successfully' if success else 'navigation failed'}",
+            "coordinates": {"lat": latitude, "lon": longitude, "alt": altitude}
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"fly to waypoint exception: {e}"}
+
+
+async def handle_validate_waypoints(conn, waypoints: list) -> Dict[str, Any]:
+    """Handle waypoint validation command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Validate waypoints format
+        if not waypoints or not isinstance(waypoints, list):
+            return {"status": "error", "detail": "waypoints must be a non-empty list"}
+        
+        # Initialize waypoint system if needed
+        if not hasattr(controller, 'waypoint_mission'):
+            controller._Controller__init_waypoint_system()
+        
+        processed_waypoints = controller.validate_and_process_waypoints(waypoints)
+        
+        validation_result = {
+            "original_count": len(waypoints),
+            "processed_count": len(processed_waypoints),
+            "waypoints_valid": len(processed_waypoints) > 0,
+            "processed_waypoints": processed_waypoints
+        }
+        
+        return {
+            "status": "ok", 
+            "detail": f"validated {len(waypoints)} waypoints, {len(processed_waypoints)} are valid",
+            "validation": validation_result
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"waypoint validation exception: {e}"}
+
+
+async def handle_calculate_mission_stats(conn, waypoints: list) -> Dict[str, Any]:
+    """Handle mission statistics calculation command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        if not waypoints or not isinstance(waypoints, list):
+            return {"status": "error", "detail": "waypoints must be a non-empty list"}
+        
+        stats = controller.calculate_mission_stats(waypoints)
+        return {
+            "status": "ok", 
+            "detail": "mission statistics calculated",
+            "mission_stats": stats
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"mission stats exception: {e}"}
+
+
+async def handle_generate_grid_mission(conn, start_lat: float, start_lon: float, 
+                                     grid_size: int, spacing: float, altitude: float = 20.0) -> Dict[str, Any]:
+    """Handle grid mission generation command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Validate parameters
+        if not (-90 <= start_lat <= 90) or not (-180 <= start_lon <= 180):
+            return {"status": "error", "detail": "invalid start coordinates"}
+        
+        if grid_size <= 0 or grid_size > 20:
+            return {"status": "error", "detail": "grid_size must be between 1 and 20"}
+        
+        if spacing <= 0 or spacing > 1000:
+            return {"status": "error", "detail": "spacing must be between 0 and 1000 meters"}
+        
+        waypoints = controller.generate_grid_mission(start_lat, start_lon, grid_size, spacing, altitude)
+        
+        return {
+            "status": "ok", 
+            "detail": f"generated grid mission with {len(waypoints)} waypoints",
+            "waypoints": waypoints,
+            "mission_type": "grid"
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"grid mission generation exception: {e}"}
+
+
+async def handle_generate_circular_mission(conn, center_lat: float, center_lon: float, 
+                                         radius_meters: float, num_points: int, altitude: float = 20.0) -> Dict[str, Any]:
+    """Handle circular mission generation command."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        # Validate parameters
+        if not (-90 <= center_lat <= 90) or not (-180 <= center_lon <= 180):
+            return {"status": "error", "detail": "invalid center coordinates"}
+        
+        if radius_meters <= 0 or radius_meters > 5000:
+            return {"status": "error", "detail": "radius must be between 0 and 5000 meters"}
+        
+        if num_points < 3 or num_points > 50:
+            return {"status": "error", "detail": "num_points must be between 3 and 50"}
+        
+        waypoints = controller.generate_circular_mission(center_lat, center_lon, radius_meters, num_points, altitude)
+        
+        return {
+            "status": "ok", 
+            "detail": f"generated circular mission with {len(waypoints)} waypoints",
+            "waypoints": waypoints,
+            "mission_type": "circular"
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"circular mission generation exception: {e}"}
+
+
+async def handle_waypoint_emergency_response(conn, prompt_id: str, choice: str) -> Dict[str, Any]:
+    """Handle user response to waypoint battery emergency prompt."""
+    controller = getattr(conn, "controller", None)
+    if controller is None:
+        return {"status": "error", "detail": "no controller available"}
+    
+    try:
+        success = controller.handle_waypoint_emergency_response(prompt_id, choice)
+        return {
+            "status": "ok" if success else "error",
+            "detail": f"emergency response {'recorded' if success else 'failed'}",
+            "prompt_id": prompt_id,
+            "choice": choice
+        }
+    except Exception as e:
+        return {"status": "error", "detail": f"emergency response exception: {e}"}
+
+
+# Add waypoint handlers to the command registry after all functions are defined
+COMMAND_HANDLERS.update({
+    "execute_waypoint_mission": handle_execute_waypoint_mission,
+    "waypoint_mission_status": handle_waypoint_mission_status,
+    "stop_waypoint_mission": handle_stop_waypoint_mission,
+    "set_waypoint_override": handle_set_waypoint_override,
+    "fly_to_waypoint": handle_fly_to_waypoint,
+    "validate_waypoints": handle_validate_waypoints,
+    "calculate_mission_stats": handle_calculate_mission_stats,
+    "generate_grid_mission": handle_generate_grid_mission,
+    "generate_circular_mission": handle_generate_circular_mission,
+    "waypoint_emergency_response": handle_waypoint_emergency_response,
+    "cancel_takeoff": handle_cancel_takeoff,
+})

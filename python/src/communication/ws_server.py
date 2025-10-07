@@ -9,12 +9,12 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
-from telemetry_data import TelemetryData
-from connection import Connection
-from controller import Controller
-from config import WS_HOST, WS_PORT, DRONE_ID, TELEMETRY_INTERVAL, DEFAULT_CONNECTION_STRING, DEFAULT_BAUD_RATE
-from sitl_config import SITLConfig
-from command_handlers import execute_command
+from src.core.telemetry_data import TelemetryData
+from src.core.connection import Connection
+from src.core.controller import Controller
+from config.config import WS_HOST, WS_PORT, DRONE_ID, TELEMETRY_INTERVAL, DEFAULT_CONNECTION_STRING, DEFAULT_BAUD_RATE
+from config.sitl_config import SITLConfig
+from .command_handlers import execute_command
 
 connected_clients = set()
 telemetry_task = None
@@ -72,7 +72,7 @@ async def start_telemetry():
     drone_connected = True
     print("Telemetry loop started – Drone connected")
 
-    telemetry = TelemetryData(conn.vehicle)
+    telemetry = TelemetryData(conn.vehicle, conn.controller)
 
     async def telemetry_loop():
         global drone_connected

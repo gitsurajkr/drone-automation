@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { MapPin, Pencil, Play, RotateCcw, Maximize2, Minimize2, Target } from "lucide-react"
 import type { DroneData } from "@/hooks/use-drone-data"
+import toast from "react-hot-toast"
 
 declare global {
     interface Window {
@@ -18,6 +19,7 @@ interface InteractiveMapProps {
     droneData: DroneData | null
     onCommand: (command: string, payload?: any) => Promise<any>
     isConnected: boolean
+    takeoffProgress?: { status: 'idle'|'started'|'completed'|'failed', target_altitude?: number | null, mission_id?: string | null, current_altitude?: number | null, percent?: number | null }
 }
 
 interface DrawnWaypoint {
@@ -25,6 +27,8 @@ interface DrawnWaypoint {
     lng: number
     altitude: number
 }
+
+
 
 // Default center (Delhi, India)
 const DEFAULT_CENTER = { lat: 28.5245, lng: 77.5770 }
@@ -54,7 +58,7 @@ function loadGoogleMaps(apiKey: string | undefined): Promise<void> {
 
         window.__googleMapsScriptLoading = true
         const script = document.createElement("script")
-        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}`
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=drawing`
         script.async = true
         script.defer = true
         script.onload = () => resolve()
@@ -63,17 +67,25 @@ function loadGoogleMaps(apiKey: string | undefined): Promise<void> {
     })
 }
 
-export function InteractiveMap({ droneData, onCommand, isConnected }: InteractiveMapProps) {
+export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgress }: InteractiveMapProps) {
     const mapRef = useRef<HTMLDivElement>(null)
     const mapInstanceRef = useRef<any>(null)
     const droneMarkerRef = useRef<any>(null)
     const [drawnPath, setDrawnPath] = useState<DrawnWaypoint[]>([])
     const [isDrawing, setIsDrawing] = useState(false)
+    const isDrawingRef = useRef(false) // Use ref to avoid closure issues
     const [isFullscreen, setIsFullscreen] = useState(false)
+    const [generatedWaypoints, setGeneratedWaypoints] = useState<DrawnWaypoint[]>([])
     const polylineRef = useRef<any>(null)
     const waypointMarkersRef = useRef<any[]>([])
     const mapClickListenerRef = useRef<any>(null)
     const [mapsLoadedError, setMapsLoadedError] = useState<string | null>(null)
+    const gpsTrailRef = useRef<any>(null)
+    const [gpsTrail, setGpsTrail] = useState<{lat: number, lng: number}[]>([])
+    const animationRequestRef = useRef<number | null>(null)
+    const lastDronePositionRef = useRef<{lat: number, lng: number} | null>(null)
+    const isTakeoffActive = takeoffProgress?.status === 'started'
+    const takeoffActive = (typeof (arguments[0]) !== 'undefined' && (arguments[0] as any).takeoffProgress) ? false : false
 
     // Initialize Google Maps
     useEffect(() => {
@@ -113,6 +125,10 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                     // Enable gesture handling
                     gestureHandling: 'cooperative',
 
+                    // Map cursor style (will be overridden when drawing)
+                    draggableCursor: 'default',
+                    draggingCursor: 'move',
+
                     // Other controls
                     mapTypeControl: true,
                     mapTypeControlOptions: {
@@ -133,6 +149,9 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                 })
 
                 mapInstanceRef.current = map
+                console.log("[Sky Navigator] Map initialized successfully")
+
+                // Removed area drawing - keeping only path drawing
 
                 // Create drone marker using the drone.png image
                 const droneIcon = {
@@ -172,14 +191,31 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
 
                 droneMarkerRef.current = marker
 
+                // Initialize GPS trail polyline with more visible styling
+                gpsTrailRef.current = new window.google.maps.Polyline({
+                    path: [],
+                    strokeColor: "#ff6b35", // Orange color for better visibility
+                    strokeOpacity: 0.9,
+                    strokeWeight: 4, // Thicker line
+                    geodesic: true,
+                    zIndex: 1000, // Ensure it's above other elements
+                    map: map
+                })
+
                 // Map click handler for drawing mode
                 mapClickListenerRef.current = map.addListener("click", (e: any) => {
-                    if (!isDrawing) return
+                    console.log("[Sky Navigator] Map clicked, isDrawing:", isDrawingRef.current)
+                    if (!isDrawingRef.current) {
+                        console.log("[Sky Navigator] Not in drawing mode, ignoring click")
+                        return
+                    }
                     const lat = e.latLng.lat()
                     const lng = e.latLng.lng()
-                    const wp: DrawnWaypoint = { lat, lng, altitude: 0 }
+                    const wp: DrawnWaypoint = { lat, lng, altitude: 20 } // Default to 20m altitude
+                    console.log("[Sky Navigator] Adding waypoint:", wp)
                     setDrawnPath((prev) => {
                         const next = [...prev, wp]
+                        console.log("[Sky Navigator] Updated path:", next)
                         updatePathOnMap(next, map)
                         return next
                     })
@@ -206,8 +242,20 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                 polylineRef.current.setMap(null)
                 polylineRef.current = null
             }
+            if (gpsTrailRef.current) {
+                gpsTrailRef.current.setMap(null)
+                gpsTrailRef.current = null
+            }
+
             waypointMarkersRef.current.forEach((m) => m.setMap && m.setMap(null))
             waypointMarkersRef.current = []
+            
+            // Cancel any ongoing animation
+            if (animationRequestRef.current) {
+                cancelAnimationFrame(animationRequestRef.current)
+                animationRequestRef.current = null
+            }
+            
             mapInstanceRef.current = null
         }
         // We intentionally do not include isDrawing/droneData in deps here for controlled updates below
@@ -262,7 +310,9 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
     }
 
     const startDrawing = () => {
+        console.log("[Sky Navigator] startDrawing called")
         setIsDrawing(true)
+        isDrawingRef.current = true // Update ref immediately
         setDrawnPath([])
         if (polylineRef.current) {
             polylineRef.current.setMap(null)
@@ -270,15 +320,61 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         }
         waypointMarkersRef.current.forEach((m) => m.setMap && m.setMap(null))
         waypointMarkersRef.current = []
+        
+        // Disable map dragging and set crosshair cursor for drawing
+        if (mapInstanceRef.current) {
+            console.log("[Sky Navigator] Setting map options for drawing mode")
+            mapInstanceRef.current.setOptions({ 
+                draggable: false,  // Disable map dragging
+                draggableCursor: 'crosshair',
+                draggingCursor: 'crosshair',
+                gestureHandling: 'cooperative',  // Keep gesture handling but disable dragging
+                scrollwheel: false,  // Disable scroll zoom while drawing
+                disableDoubleClickZoom: true  // Disable double-click zoom
+            })
+        } else {
+            console.log("[Sky Navigator] Map instance not ready")
+        }
+        
+        console.log("[Sky Navigator] Drawing mode activated, isDrawing set to true")
     }
 
     const stopDrawing = () => {
         setIsDrawing(false)
+        isDrawingRef.current = false // Update ref immediately
+        
+        // Re-enable map dragging and reset cursor to default
+        if (mapInstanceRef.current) {
+            mapInstanceRef.current.setOptions({ 
+                draggable: true,  // Re-enable map dragging
+                draggableCursor: 'default',
+                draggingCursor: 'move',
+                gestureHandling: 'cooperative',  // Re-enable gesture handling
+                scrollwheel: true,  // Re-enable scroll zoom
+                disableDoubleClickZoom: false  // Re-enable double-click zoom
+            })
+        }
+        
+        console.log("[Sky Navigator] Stopping drawing mode")
     }
 
     const clearPath = () => {
         setDrawnPath([])
         setIsDrawing(false)
+        isDrawingRef.current = false // Update ref immediately
+        
+        // Re-enable map dragging and reset cursor to default
+        if (mapInstanceRef.current) {
+            mapInstanceRef.current.setOptions({ 
+                draggable: true,  // Re-enable map dragging
+                draggableCursor: 'default',
+                draggingCursor: 'move',
+                gestureHandling: 'cooperative',  // Re-enable gesture handling
+                scrollwheel: true,  // Re-enable scroll zoom
+                disableDoubleClickZoom: false  // Re-enable double-click zoom
+            })
+        }
+        
         if (polylineRef.current) {
             polylineRef.current.setMap(null)
             polylineRef.current = null
@@ -287,19 +383,77 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         waypointMarkersRef.current = []
     }
 
+    const clearGpsTrail = () => {
+        setGpsTrail([])
+        console.log("[GPS Trail] Cleared GPS trail")
+        toast.success("GPS trail cleared")
+    }
+
     const startMission = async () => {
-        if (drawnPath.length > 0) {
-            try {
-                // For now, convert drawn path to a simple waypoint mission
-                // This could be enhanced to support actual waypoint navigation
-                await onCommand("fly_timed", {
-                    altitude: 10,
-                    duration: drawnPath.length * 30 // 30 seconds per waypoint
-                })
-                console.log("[Sky Navigator] Starting timed mission based on drawn path:", drawnPath)
-            } catch (error) {
-                console.error("Failed to start mission:", error)
+        // Validation checks before starting mission
+        if (drawnPath.length === 0) {
+            console.warn("[Sky Navigator] No waypoints drawn")
+            return
+        }
+
+        // Battery check - must be above 25%
+        if (droneData?.battery && droneData.battery < 25) {
+            console.error(`[Sky Navigator] ❌ Battery too low: ${droneData.battery}% - Cannot set waypoints (minimum 25% required)`)
+            toast.error(`⚠️ Battery too low: ${droneData.battery}%\nCannot execute waypoint mission.\nMinimum 25% battery required for safety.`)
+            return
+        }
+
+        // GPS check - must have at least 6 satellites
+        if (!droneData?.satellites || droneData.satellites < 6) {
+            console.error(`[Sky Navigator] ❌ GPS insufficient: ${droneData?.satellites || 0} satellites - Cannot set waypoints (minimum 6 satellites required)`)
+            toast.error(`⚠️ GPS signal insufficient: ${droneData?.satellites || 0} satellites\nCannot execute waypoint mission.\nMinimum 6 satellites required for navigation.`)
+            return
+        }
+
+        // GPS coordinates check
+        if (!droneData?.gps || Math.abs(droneData.gps.latitude) < 0.0001 || Math.abs(droneData.gps.longitude) < 0.0001) {
+            console.error("[Sky Navigator] ❌ Invalid GPS coordinates - Cannot set waypoints")
+            toast.error("⚠️ Invalid GPS coordinates\nCannot execute waypoint mission.\nWaiting for valid GPS lock.")
+            return
+        }
+
+        // Connection check
+        if (!isConnected) {
+            console.error("[Sky Navigator] ❌ Drone not connected - Cannot set waypoints")
+            toast.error("⚠️ Drone not connected\nCannot execute waypoint mission.\nPlease connect to drone first.")
+            return
+        }
+
+        try {
+            console.log(`[Sky Navigator] ✅ Pre-flight checks passed - Battery: ${droneData.battery}%, GPS: ${droneData.satellites} sats`)
+            
+            // Execute waypoint mission using the new waypoint system
+            const waypoints = drawnPath.map((point, index) => ({
+                latitude: point.lat,
+                longitude: point.lng,
+                altitude: point.altitude || 20,
+                order: index
+            }))
+            
+            console.log("[Sky Navigator] Sending waypoints:", waypoints)
+            
+            const result = await onCommand("execute_waypoint_mission", {
+                waypoints: waypoints,
+                takeoff_altitude: 20
+            })
+            
+            console.log("[Sky Navigator] Waypoint mission result:", result)
+            
+            if (result?.status === "ok") {
+                console.log("[Sky Navigator] ✅ Waypoint mission started successfully")
+                toast.success("🚁 Waypoint mission started successfully!")
+            } else {
+                console.error("[Sky Navigator] ❌ Failed to start waypoint mission:", result?.detail || result)
+                toast.error(`Failed to start waypoint mission: ${result?.detail || result?.message || 'Unknown error'}`)
             }
+        } catch (error) {
+            console.error("Failed to start waypoint mission:", error)
+            toast.error(`Error starting waypoint mission: ${error}`)
         }
     }
 
@@ -316,6 +470,95 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         }
     }
 
+    const stopWaypointMission = async () => {
+        try {
+            const result = await onCommand("stop_waypoint_mission")
+            if (result?.status === "success") {
+                console.log("[Sky Navigator] Waypoint mission stopped successfully")
+            } else {
+                console.error("[Sky Navigator] Failed to stop waypoint mission:", result)
+            }
+        } catch (error) {
+            console.error("Failed to stop waypoint mission:", error)
+        }
+    }
+
+    const checkMissionStatus = async () => {
+        try {
+            const result = await onCommand("waypoint_mission_status")
+            console.log("[Sky Navigator] Mission status:", result)
+        } catch (error) {
+            console.error("Failed to get mission status:", error)
+        }
+    }
+
+    // Removed waypoint generation - using manual path drawing only
+
+
+
+    // Button click handlers
+    const handleDrawPath = () => startDrawing()
+    const handleStopDrawing = () => stopDrawing()
+
+    // Smooth animation function for drone movement
+    const animateDroneToPosition = (targetPosition: {lat: number, lng: number}) => {
+        const marker = droneMarkerRef.current
+        if (!marker) return
+
+        const startPosition = marker.getPosition()
+        if (!startPosition) {
+            marker.setPosition(targetPosition)
+            return
+        }
+
+        const startLat = startPosition.lat()
+        const startLng = startPosition.lng()
+        const deltaLat = targetPosition.lat - startLat
+        const deltaLng = targetPosition.lng - startLng
+        
+        // Calculate distance to determine animation duration
+        const distance = Math.sqrt(deltaLat * deltaLat + deltaLng * deltaLng)
+        const duration = Math.min(2000, Math.max(500, distance * 100000)) // 0.5-2s based on distance
+        
+        const startTime = performance.now()
+        
+        const animate = (currentTime: number) => {
+            const elapsed = currentTime - startTime
+            const progress = Math.min(elapsed / duration, 1)
+            
+            // Easing function for smooth movement
+            const easeProgress = 1 - Math.pow(1 - progress, 3)
+            
+            const currentLat = startLat + deltaLat * easeProgress
+            const currentLng = startLng + deltaLng * easeProgress
+            
+            marker.setPosition({ lat: currentLat, lng: currentLng })
+            
+            if (progress < 1) {
+                animationRequestRef.current = requestAnimationFrame(animate)
+            }
+        }
+        
+        if (animationRequestRef.current) {
+            cancelAnimationFrame(animationRequestRef.current)
+        }
+        animationRequestRef.current = requestAnimationFrame(animate)
+    }
+
+    // Update GPS trail
+    const updateGpsTrail = (newPosition: {lat: number, lng: number}) => {
+        setGpsTrail(prevTrail => {
+            const newTrail = [...prevTrail, newPosition]
+            // Keep only last 100 positions for performance
+            if (newTrail.length > 100) {
+                newTrail.shift()
+            }
+            // Log trail update for debugging
+            console.log(`[GPS Trail] Updated trail: ${newTrail.length} points, latest: ${newPosition.lat}, ${newPosition.lng}`)
+            return newTrail
+        })
+    }
+
     // Update drone marker position & rotation when droneData changes
     useEffect(() => {
         const map = mapInstanceRef.current
@@ -328,25 +571,36 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         const heading = droneData?.orientation?.heading ?? 0
 
         // Check for valid GPS coordinates
-        const hasValidGps = sats >= 4 && Math.abs(lat) > 0.0001 && Math.abs(lng) > 0.0001
+        const hasValidGps = sats >= 6 && Math.abs(lat) > 0.0001 && Math.abs(lng) > 0.0001
 
-        // Update drone icon with proper size based on connection status
+        // Update drone icon with proper size and rotation based on connection status
         const size = isConnected ? 40 : 30
         const droneIcon = {
-            url: '/drone.png', // Use the existing drone1.png file
+            url: '/drone.png',
             scaledSize: new window.google.maps.Size(size, size),
             anchor: new window.google.maps.Point(size / 2, size / 2),
+            rotation: heading,
             optimized: false
         }
 
         marker.setIcon(droneIcon)
 
-        // Update position and center map on valid GPS
+        // Update position with smooth animation and GPS trail
         if (hasValidGps) {
             const newPosition = { lat, lng }
-            marker.setPosition(newPosition)
+            const lastPosition = lastDronePositionRef.current
+            
+            // Only animate if position actually changed significantly
+            if (!lastPosition || 
+                Math.abs(newPosition.lat - lastPosition.lat) > 0.0001 || 
+                Math.abs(newPosition.lng - lastPosition.lng) > 0.0001) {
+                
+                animateDroneToPosition(newPosition)
+                updateGpsTrail(newPosition)
+                lastDronePositionRef.current = newPosition
+            }
 
-            // Center map on drone if not in drawing mode and map hasn't been manually moved
+            // Center map on drone if not in drawing mode
             if (!isDrawing) {
                 map.panTo(newPosition)
             }
@@ -356,6 +610,23 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
         marker.setOpacity(isConnected ? 1.0 : 0.6)
 
     }, [droneData?.gps?.latitude, droneData?.gps?.longitude, droneData?.orientation?.heading, droneData?.satellites, isConnected, isDrawing])
+
+    // Update GPS trail polyline when trail changes
+    useEffect(() => {
+        const trail = gpsTrailRef.current
+        if (!trail) {
+            console.log("[GPS Trail] Trail polyline not initialized")
+            return
+        }
+        
+        console.log(`[GPS Trail] Updating trail path with ${gpsTrail.length} points`)
+        trail.setPath(gpsTrail)
+        
+        // Make sure the trail is visible on the map
+        if (gpsTrail.length > 0) {
+            console.log(`[GPS Trail] Trail visible with ${gpsTrail.length} points from ${gpsTrail[0].lat},${gpsTrail[0].lng} to ${gpsTrail[gpsTrail.length-1].lat},${gpsTrail[gpsTrail.length-1].lng}`)
+        }
+    }, [gpsTrail])
 
     // When drawnPath state updates we must update the map polyline (map may not be ready yet)
     useEffect(() => {
@@ -407,22 +678,89 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                             {isConnected ? "🟢 Live" : "🔴 Offline"}
                         </Badge>
                         <Badge variant="outline">Waypoints: {drawnPath.length}</Badge>
+                        <Badge variant="outline">Trail: {gpsTrail.length}</Badge>
                         {droneData?.satellites && (
-                            <Badge variant={droneData.satellites >= 4 ? "default" : "destructive"}>
+                            <Badge variant={droneData.satellites >= 6 ? "default" : "destructive"}>
                                 GPS: {droneData.satellites}
+                            </Badge>
+                        )}
+                        {droneData?.battery && (
+                            <Badge variant={droneData.battery >= 25 ? "default" : "destructive"}>
+                                🔋 {droneData.battery.toFixed(0)}%
                             </Badge>
                         )}
                     </div>
                 </div>
             </CardHeader>
             <CardContent className="h-[calc(100%-80px)] space-y-4">
+                {/* Blocking modal during auto-takeoff */}
+                {isTakeoffActive && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+                        <div className="bg-white rounded-lg p-6 max-w-md w-full text-center">
+                            <h3 className="text-lg font-semibold mb-2">Automatic Takeoff in Progress</h3>
+                            <p className="text-sm text-muted-foreground">The drone is performing an automated takeoff. Mission controls are disabled until takeoff completes.</p>
+                            <div className="mt-2 text-sm text-gray-700">
+                                <div>Mission: <strong>{takeoffProgress?.mission_id ?? '—'}</strong></div>
+                                <div>Target Altitude: <strong>{takeoffProgress?.target_altitude ?? '—'} m</strong></div>
+                                <div>Current Altitude: <strong>{(takeoffProgress?.current_altitude ?? 0).toFixed(1)} m</strong></div>
+                            </div>
+                            <div className="mt-4">
+                                <div className="h-3 bg-gray-200 rounded overflow-hidden">
+                                    <div className="bg-blue-500 h-full" style={{ width: `${takeoffProgress?.percent ?? 0}%` }} />
+                                </div>
+                                <div className="mt-2 text-xs text-gray-500">{takeoffProgress?.percent ?? 0}%</div>
+                            </div>
+                            <div className="mt-4 flex gap-3 justify-center">
+                                <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    onClick={async () => {
+                                        const ok = confirm('Confirm cancel takeoff? This will place the vehicle into LOITER and abort the mission.');
+                                        if (!ok) return;
+                                        try {
+                                            const res = await onCommand('cancel_takeoff')
+                                            if (res?.status === 'ok') {
+                                                // Let the standard takeoff messages update UI
+                                                console.log('Cancel takeoff requested')
+                                            } else {
+                                                console.error('Cancel takeoff failed', res)
+                                            }
+                                        } catch (e) {
+                                            console.error('Cancel takeoff error', e)
+                                        }
+                                    }}
+                                >
+                                    Cancel Takeoff
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+
+                {/* Drawing Instructions */}
+                {isDrawing && (
+                    <div className="bg-green-500/20 border border-green-500/40 rounded-lg p-4 animate-pulse">
+                        <div className="flex items-center gap-2 mb-2">
+                            <div className="w-3 h-3 bg-green-400 rounded-full animate-ping"></div>
+                            <p className="text-lg font-semibold text-green-300">Drawing Mode Active</p>
+                        </div>
+                        <p className="text-sm text-green-200">
+                            🎯 Click anywhere on the map to add waypoints. The crosshair cursor shows you're ready to draw!
+                        </p>
+                        <p className="text-xs text-green-300 mt-2">
+                            Added waypoints: {drawnPath.length} | Click "Stop Drawing" when finished
+                        </p>
+                    </div>
+                )}
+
                 {/* Map Controls */}
                 <div className="flex gap-2 flex-wrap items-center justify-between">
                     <div className="flex gap-2 flex-wrap">
                         <Button
                             variant={isDrawing ? "destructive" : "default"}
                             size="sm"
-                            onClick={isDrawing ? stopDrawing : startDrawing}
+                            onClick={isDrawing ? handleStopDrawing : handleDrawPath}
                             disabled={!isConnected}
                         >
                             <Pencil className="h-4 w-4 mr-2" />
@@ -443,10 +781,73 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                             variant="default"
                             size="sm"
                             onClick={startMission}
-                            disabled={drawnPath.length === 0 || !isConnected}
+                            disabled={
+                                drawnPath.length === 0 || 
+                                !isConnected || 
+                                isTakeoffActive ||
+                                (droneData?.battery && droneData.battery < 25) ||
+                                !droneData?.satellites || 
+                                droneData.satellites < 6
+                            }
+                            className={
+                                (droneData?.battery && droneData.battery < 25) ||
+                                (!droneData?.satellites || droneData.satellites < 6) 
+                                ? "opacity-50 cursor-not-allowed" 
+                                : ""
+                            }
                         >
                             <Play className="h-4 w-4 mr-2" />
-                            Start Mission
+                            {(droneData?.battery && droneData.battery < 25) ? 
+                                `Low Battery (${droneData.battery}%)` :
+                                (!droneData?.satellites || droneData.satellites < 6) ?
+                                `Poor GPS (${droneData?.satellites || 0} sats)` :
+                                "Start Mission"
+                            }
+                        </Button>
+
+                        <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={stopWaypointMission}
+                            disabled={!isConnected || isTakeoffActive}
+                        >
+                            Stop Mission
+                        </Button>
+
+                        <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={checkMissionStatus}
+                            disabled={!isConnected || isTakeoffActive}
+                        >
+                            Mission Status
+                        </Button>
+
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={clearGpsTrail}
+                            disabled={gpsTrail.length === 0}
+                        >
+                            Clear Trail ({gpsTrail.length})
+                        </Button>
+
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                                // Add test GPS trail points for debugging
+                                const testPoints = [
+                                    { lat: 28.5245, lng: 77.5770 },
+                                    { lat: 28.5250, lng: 77.5775 },
+                                    { lat: 28.5255, lng: 77.5780 },
+                                    { lat: 28.5260, lng: 77.5785 }
+                                ]
+                                setGpsTrail(prev => [...prev, ...testPoints])
+                                toast.success("Added test GPS trail")
+                            }}
+                        >
+                            Test Trail
                         </Button>
 
                         <Button
@@ -469,14 +870,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                     </Button>
                 </div>
 
-                {/* Drawing Instructions */}
-                {isDrawing && (
-                    <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
-                        <p className="text-sm text-blue-400">
-                            Click on the map to add waypoints and create a flight path. The drone will follow the line you draw.
-                        </p>
-                    </div>
-                )}
+              
 
                 {/* Map Container */}
                 <div className={`relative bg-black rounded-lg overflow-hidden transition-all duration-300 ${isFullscreen
@@ -503,6 +897,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected }: Interactiv
                             <div>Lat: <span className="text-green-400">{(droneData?.gps?.latitude ?? 0).toFixed(6)}</span></div>
                             <div>Lng: <span className="text-green-400">{(droneData?.gps?.longitude ?? 0).toFixed(6)}</span></div>
                             <div>Heading: <span className="text-orange-400">{(droneData?.orientation?.heading ?? 0).toFixed(1)}°</span></div>
+                            <div>GPS Valid: <span className="text-yellow-400">{(droneData?.satellites ?? 0) >= 6 && Math.abs(droneData?.gps?.latitude ?? 0) > 0.0001 ? 'Yes' : 'No'}</span></div>
                         </div>
                     </div>
 

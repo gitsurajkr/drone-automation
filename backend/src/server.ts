@@ -45,7 +45,13 @@ wss.on('connection', (ws) => {
                 'takeoff', 'land', 'rtl', 'arm_and_takeoff',
                 'fly_timed', 'mission_status', 'sitl_setup',
                 'set_throttle', 'release_throttle',
-                'emergency_land', 'verify_home', 'force_land_here'
+                'emergency_land', 'verify_home', 'force_land_here',
+                // Waypoint commands
+                'execute_waypoint_mission', 'waypoint_mission_status',
+                'stop_waypoint_mission', 'set_waypoint_override',
+                'fly_to_waypoint', 'validate_waypoints',
+                'calculate_mission_stats', 'generate_grid_mission',
+                'generate_circular_mission', 'waypoint_emergency_response'
             ];
 
             if (enhancedCommands.includes(cmd)) {

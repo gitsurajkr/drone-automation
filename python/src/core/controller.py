@@ -1,98 +1,55 @@
 import asyncio
 import json
 import time
+import logging
 from datetime import datetime, timedelta
 from dronekit import VehicleMode, LocationGlobalRelative
-from sitl_config import SITLConfig
-from safety_config import SafetyConfig, FlightLogger
-from typing import Optional, Dict, Any, Tuple
+from config.sitl_config import SITLConfig
+from config.config import FlightLogger, SafetyConfig  # SafetyConfig for legacy compatibility
+from ..navigation.navigation_utils import NavigationUtils
+from ..safety.flight_safety import FlightSafetyManager
+from ..navigation.waypoint_manager import WaypointMissionManager
+from typing import Optional, Dict, Any, Tuple, Callable
 
 class Controller:
     def __init__(self, connection):
         self.connection = connection
         self.is_sitl = False  # Track if this is a SITL connection
+        
+        # Setup simple logging
+        logging.basicConfig(level=logging.INFO, 
+                          format='%(asctime)s - %(levelname)s - %(message)s')
+        self.logger = logging.getLogger('drone_controller')
+        
+        # Legacy logger for compatibility  
         self.flight_logger = FlightLogger()
+        
+        # Initialize subsystems
+        self.safety_manager = FlightSafetyManager()
+        self.waypoint_manager = WaypointMissionManager(connection)
+        
+        # Flight state
         self.flight_start_time = None
         self.home_location = None
         self.current_mission = None
+        
+        # Emergency state tracking
+        self.emergency_prompts = {}
+        
+        # Start monitoring task
+        asyncio.create_task(self._monitor_flight_safety())
+        
+        self.logger.info("Enhanced controller initialized successfully")
 
     def _vehicle_ready(self, require_armable=True, emergency_override=False):
-        
-        # check vehicle connectivity
-        if not getattr(self.connection, "is_connected", False) or not getattr(self.connection, "vehicle", None):
-            print("Vehicle not connected.")
-            return False
-
-        vehicle = self.connection.vehicle
-
-        # Check heartbeat freshness with configurable timeout
-        last_heartbeat = getattr(vehicle, "last_heartbeat", None)
-        if last_heartbeat is not None and last_heartbeat > SafetyConfig.MAX_HEARTBEAT_AGE:
-            print(f"Vehicle heartbeat too old: {last_heartbeat}s (need <{SafetyConfig.MAX_HEARTBEAT_AGE}s)")
-            return False
-
-        if require_armable and not getattr(vehicle, "is_armable", False):
-            print("Vehicle is not armable.")
-            return False
-
-        # GPS check with enhanced validation
-        gps = getattr(vehicle, "gps_0", None)
-        if gps is not None:
-            fix = getattr(gps, "fix_type", 0) or 0
-            satellites = getattr(gps, "satellites_visible", 0) or 0
-            
-            if require_armable and fix < SafetyConfig.MIN_GPS_FIX:
-                print(f"GPS fix not sufficient for arming (fix_type={fix}, need ≥{SafetyConfig.MIN_GPS_FIX}).")
-                return False
-            elif fix < 2:  # Basic connectivity check
-                print(f"GPS fix too poor (fix_type={fix}).")
-                return False
-                
-            if require_armable and satellites < SafetyConfig.MIN_GPS_SATELLITES:
-                print(f"Not enough GPS satellites ({satellites}, need ≥{SafetyConfig.MIN_GPS_SATELLITES}).")
-                return False
-
-        # Battery check with configurable limits (skip during emergency override)
-        if not emergency_override:
-            battery = getattr(vehicle, "battery", None)
-            if battery is not None:
-                batt_level = getattr(battery, "level", None)
-                if batt_level is not None and batt_level < SafetyConfig.MIN_BATTERY_LEVEL:
-                    print(f"Battery level too low ({batt_level}%, need ≥{SafetyConfig.MIN_BATTERY_LEVEL}%).")
-                    return False
-                
-                # Check battery voltage with better detection
-                voltage = getattr(battery, "voltage", None)
-                if voltage is not None:
-                    min_voltage = self._get_min_battery_voltage(voltage)
-                    if voltage < min_voltage:
-                        print(f"Battery voltage too low ({voltage}V, need ≥{min_voltage}V).")
-                        return False
-        else:
-            # Log emergency override usage
-            battery = getattr(vehicle, "battery", None)
-            if battery is not None:
-                batt_level = getattr(battery, "level", None)
-                if batt_level is not None:
-                    print(f"⚠️ EMERGENCY OVERRIDE: Bypassing battery safety check ({batt_level}%)")
-
-        # Check system status if available
-        if hasattr(vehicle, 'system_status'):
-            sys_status = getattr(vehicle.system_status, 'state', 'UNKNOWN')
-            if require_armable and sys_status not in ['STANDBY', 'ACTIVE']:
-                print(f"Vehicle not in safe state: {sys_status}")
-                return False
+        """Check if vehicle is ready for operations using safety manager."""
+        return self.safety_manager.validate_vehicle_ready(
+            self.connection, require_armable, emergency_override
+        )
 
         return True
 
-    def _get_min_battery_voltage(self, current_voltage: float) -> float:
-        """Determine minimum safe voltage based on current voltage (auto-detect battery type)."""
-        if current_voltage > 20:  # 6S battery
-            return SafetyConfig.MIN_BATTERY_VOLTAGE_6S
-        elif current_voltage > 13:  # 4S battery  
-            return SafetyConfig.MIN_BATTERY_VOLTAGE_4S
-        else:  # 3S battery (default)
-            return SafetyConfig.MIN_BATTERY_VOLTAGE_3S
+
 
     def _detect_sitl_connection(self) -> bool:
         """Auto-detect if this is a SITL connection based on various indicators."""
@@ -225,25 +182,37 @@ class Controller:
             print(f"[ARM] FAILED - Exception: {e}")
             return False
 
-    async def arm_and_takeoff(self, altitude: float = 5.0, *, wait_mode_timeout=10.0, wait_arm_timeout=20.0) -> bool:
-        """Arm vehicle and immediately takeoff - prevents auto-disarm timeout."""
+    async def arm_and_takeoff(
+        self,
+        altitude: float = 5.0,
+        *,
+        wait_mode_timeout=10.0,
+        wait_arm_timeout=20.0,
+        progress_callback: Optional[Callable[[float, float], Any]] = None,
+    ) -> bool:
+        """Arm vehicle and immediately takeoff - prevents auto-disarm timeout.
+
+        Args:
+            altitude: target altitude in meters
+            progress_callback: optional async function called as progress_callback(current_altitude, target_altitude)
+        """
         print(f"[ARM+TAKEOFF] Starting sequence to {altitude}m")
-        
+
         # Step 1: Arm the vehicle
         if not await self.arm(wait_mode_timeout=wait_mode_timeout, wait_arm_timeout=wait_arm_timeout):
             print("[ARM+TAKEOFF] FAILED - Arming unsuccessful")
             return False
-        
+
         # Step 2: Immediate takeoff to prevent auto-disarm
         print("[ARM+TAKEOFF] Proceeding to takeoff (preventing auto-disarm)")
         await asyncio.sleep(0.5)  # Brief pause to ensure arming is stable
-        
-        if not await self.takeoff(altitude):
+
+        if not await self.takeoff(altitude, progress_callback=progress_callback):
             print("[ARM+TAKEOFF] FAILED - Takeoff unsuccessful")
             # Try to disarm safely
             await self.disarm()
             return False
-        
+
         print(f"[ARM+TAKEOFF] SUCCESS - Now at {altitude}m altitude")
         return True
 
@@ -418,7 +387,7 @@ class Controller:
             print(f"Throttle check failed: {e}")
             return False
 
-    async def takeoff(self, altitude, *, wait_timeout=30.0):
+    async def takeoff(self, altitude, *, wait_timeout=30.0, progress_callback: Optional[Callable[[float, float], Any]] = None):
         """Safely take off to specified altitude.
         
         Args:
@@ -500,6 +469,17 @@ class Controller:
                     progress_percent = min(100, int((current_alt / altitude) * 100))
                     print(f"[TAKEOFF] Altitude: {current_alt:.1f}m ({progress_percent}%)")
                     last_logged_meter = current_meter
+
+                # Broadcast progress if callback provided
+                try:
+                    if progress_callback:
+                        # Allow sync or async callback
+                        maybe_coro = progress_callback(current_alt, altitude)
+                        if asyncio.iscoroutine(maybe_coro):
+                            await maybe_coro
+                except Exception as e:
+                    # Don't fail takeoff for progress callback errors
+                    print(f"[TAKEOFF] Progress callback error: {e}")
                 
                 # Check if target reached (within 95% of target)
                 if current_alt >= altitude * 0.95:
@@ -1068,3 +1048,146 @@ class Controller:
         asyncio.create_task(cleanup_prompt())
         
         return True
+
+    # =============================================================================
+    # WAYPOINT NAVIGATION DELEGATION
+    # =============================================================================
+    # All waypoint functionality delegated to WaypointMissionManager
+    
+    # Waypoint mission methods - delegated to WaypointMissionManager
+    async def execute_waypoint_mission(self, waypoints: list, takeoff_altitude: float = None, 
+                                     emergency_broadcast_func=None) -> Dict[str, Any]:
+        """Execute waypoint mission using dedicated manager.
+
+        This now forwards takeoff_altitude to the manager so it can perform
+        an automatic arm-and-takeoff before following the waypoint list.
+        """
+        return await self.waypoint_manager.execute_mission(waypoints, takeoff_altitude, emergency_broadcast_func)
+    
+    def handle_waypoint_emergency_response(self, prompt_id: str, choice: str) -> bool:
+        """Handle emergency response during waypoint mission."""
+        return self.waypoint_manager.handle_emergency_response(prompt_id, choice)
+    
+    # =============================================================================
+    # ESSENTIAL MONITORING AND SAFETY
+    # =============================================================================
+    
+    async def _monitor_flight_safety(self):
+        """Simple background monitoring for critical issues."""
+        while True:
+            try:
+                if self.connection and self.connection.vehicle:
+                    vehicle = self.connection.vehicle
+                    
+                    # Monitor connection quality
+                    quality = self.safety_manager.monitor_connection_health(vehicle)
+                    if quality < 0.3:
+                        self.logger.warning(f"Poor connection quality: {quality:.2f}")
+                    
+                    # Check for critical anomalies
+                    anomalies = self.safety_manager.detect_critical_anomalies(vehicle)
+                    for anomaly in anomalies:
+                        if anomaly['severity'] == 'critical':
+                            self.logger.critical(f"Critical anomaly detected: {anomaly['type']}")
+                            # Handle critical anomalies
+                            if anomaly['type'] == 'voltage_drop':
+                                await self.emergency_land()
+                            elif anomaly['type'] in ['position_jump', 'rapid_altitude_change']:
+                                if vehicle.mode.name not in ['LOITER', 'LAND']:
+                                    vehicle.mode = VehicleMode("LOITER")
+                
+                await asyncio.sleep(2)  # Check every 2 seconds
+                
+            except Exception as e:
+                self.logger.error(f"Monitoring error: {e}")
+                await asyncio.sleep(5)
+    
+    def get_system_status(self) -> Dict[str, Any]:
+        """Get enhanced system status."""
+        status = {
+            'timestamp': datetime.now().isoformat(),
+            'vehicle_connected': self.connection and self.connection.is_connected,
+            'flight_active': self.current_mission is not None
+        }
+        
+        if self.connection and self.connection.vehicle:
+            vehicle = self.connection.vehicle
+            status['vehicle'] = {
+                'mode': getattr(vehicle.mode, 'name', 'UNKNOWN') if hasattr(vehicle, 'mode') else 'UNKNOWN',
+                'armed': getattr(vehicle, 'armed', False),
+                'is_armable': getattr(vehicle, 'is_armable', False),
+                'connection_quality': self.safety_manager.monitor_connection_health(vehicle)
+            }
+            
+            # Add location if available
+            if hasattr(vehicle, 'location') and vehicle.location.global_frame:
+                loc = vehicle.location.global_frame
+                status['location'] = {'lat': loc.lat, 'lon': loc.lon, 'alt': loc.alt}
+            
+            # Add battery if available
+            if hasattr(vehicle, 'battery'):
+                battery = vehicle.battery
+                status['battery'] = {
+                    'level': getattr(battery, 'level', 0),
+                    'voltage': getattr(battery, 'voltage', 0)
+                }
+        
+        return status
+    
+    def get_waypoint_mission_status(self) -> Optional[Dict[str, Any]]:
+        # Get current waypoint mission status.
+        return self.waypoint_manager.get_mission_status()
+    
+    def stop_waypoint_mission(self) -> bool:
+        # Stop current waypoint mission
+        return self.waypoint_manager.abort_mission("User requested stop")
+
+    def cancel_takeoff(self) -> bool:
+        """Cancel an in-progress takeoff safely: switch to LOITER (hover) and abort mission if present.
+
+        Returns True if action was taken, False if nothing to cancel.
+        """
+        vehicle = getattr(self.connection, 'vehicle', None)
+        acted = False
+
+        try:
+            if vehicle:
+                # If vehicle is climbing or armed, try switching to LOITER for a safe hover
+                armed = getattr(vehicle, 'armed', False)
+                current_alt = getattr(vehicle.location.global_relative_frame, 'alt', 0) if getattr(vehicle, 'location', None) else 0
+                if armed and (current_alt < 30):
+                    try:
+                        if getattr(vehicle.mode, 'name', None) not in ['LOITER', 'LAND']:
+                            vehicle.mode = VehicleMode('LOITER')
+                            acted = True
+                    except Exception as e:
+                        print(f"[CANCEL_TAKEOFF] Failed to set LOITER: {e}")
+
+            # Abort any active mission state machine
+            if self.current_mission or (hasattr(self, 'waypoint_manager') and self.waypoint_manager.current_mission):
+                self.waypoint_manager.abort_mission("User cancelled takeoff/mission")
+                acted = True
+
+            return acted
+        except Exception as e:
+            print(f"[CANCEL_TAKEOFF] Error while cancelling takeoff: {e}")
+            return False
+    
+    # Navigation utilities - delegated to NavigationUtils
+    def calculate_waypoint_distance(self, wp1: tuple, wp2: tuple) -> float:
+        """Calculate distance between waypoints."""
+        return NavigationUtils.calculate_distance(wp1[:2], wp2[:2])
+    
+    def validate_and_process_waypoints(self, waypoints: list) -> list:
+        """Validate and process waypoint list."""
+        from ..navigation.navigation_utils import WaypointValidator
+        processed, warnings = WaypointValidator.process_waypoints(waypoints)
+        if warnings:
+            for warning in warnings:
+                print(f"WARN: {warning}")
+        return processed
+    
+    def calculate_mission_stats(self, waypoints: list) -> dict:
+        """Calculate mission statistics."""
+        from ..navigation.navigation_utils import MissionCalculator
+        return MissionCalculator.calculate_mission_stats(waypoints)

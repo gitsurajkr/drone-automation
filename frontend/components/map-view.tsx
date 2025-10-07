@@ -31,9 +31,10 @@ interface EnhancedMapViewProps {
     alerts: DroneAlert[]
     logs: DroneLog[]
     isConnected: boolean
+    takeoffProgress?: { status: 'idle'|'started'|'completed'|'failed', target_altitude?: number | null, mission_id?: string | null, current_altitude?: number | null, percent?: number | null }
 }
 
-export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnected }: EnhancedMapViewProps) {
+export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnected, takeoffProgress }: EnhancedMapViewProps) {
     const [pathHistory, setPathHistory] = useState<Array<{ lat: number; lng: number }>>([])
     const [waypoints, setWaypoints] = useState<Waypoint[]>([])
     const [isArmed, setIsArmed] = useState(false)
@@ -101,7 +102,7 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-[calc(100vh-120px)]  ">
             {/* Main Map Area */}
             <div className="lg:col-span-3 pb-20">
-                <InteractiveMap droneData={droneData} onCommand={onCommand} isConnected={isConnected} />
+                <InteractiveMap droneData={droneData} onCommand={onCommand} isConnected={isConnected} takeoffProgress={takeoffProgress} />
             </div>
 
             {/* Sidebar */}

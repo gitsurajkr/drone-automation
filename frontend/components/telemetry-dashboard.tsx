@@ -36,7 +36,7 @@ export function TelemetryDashboard({ data, history }: TelemetryDashboardProps) {
     return (
         <div className="space-y-6">
             {/* Key Metrics Cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
                 <Card className="bg-card border-border">
                     <CardContent className="p-4">
                         <div className="flex items-center gap-3">
@@ -88,8 +88,54 @@ export function TelemetryDashboard({ data, history }: TelemetryDashboardProps) {
                                 <Navigation className="h-5 w-5 text-chart-4" />
                             </div>
                             <div>
-                                <p className="text-sm text-muted-foreground">Heading</p>
-                                <p className="text-xl font-bold">{(data.orientation?.heading ?? 0).toFixed(0)}°</p>
+                                <p className="text-sm text-muted-foreground">Yaw</p>
+                                <p className="text-xl font-bold">{(data.orientation?.yaw ? (data.orientation.yaw * 180 / Math.PI).toFixed(1) : 0)}°</p>
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+
+                <Card className="bg-card border-border">
+                    <CardContent className="p-4">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-blue-500/10 rounded-lg">
+                                <Gauge className="h-5 w-5 text-blue-500" />
+                            </div>
+                            <div>
+                                <p className="text-sm text-muted-foreground">Ground Speed</p>
+                                <p className="text-xl font-bold">{(data.groundspeed ?? 0).toFixed(1)} m/s</p>
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+
+                <Card className="bg-card border-border">
+                    <CardContent className="p-4">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-purple-500/10 rounded-lg">
+                                <Navigation className="h-5 w-5 text-purple-500" />
+                            </div>
+                            <div>
+                                <p className="text-sm text-muted-foreground">Vertical Speed</p>
+                                <p className="text-xl font-bold">{(data.climbRate ?? 0).toFixed(1)} m/s</p>
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+
+                <Card className="bg-card border-border">
+                    <CardContent className="p-4">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-orange-500/10 rounded-lg">
+                                <Zap className="h-5 w-5 text-orange-500" />
+                            </div>
+                            <div>
+                                <p className="text-sm text-muted-foreground">Distance to Waypoint</p>
+                                <p className="text-xl font-bold">
+                                    {data.distanceToWaypoint !== null && data.distanceToWaypoint !== undefined 
+                                        ? `${data.distanceToWaypoint.toFixed(1)} m` 
+                                        : 'No Mission'}
+                                </p>
                             </div>
                         </div>
                     </CardContent>
@@ -117,6 +163,14 @@ export function TelemetryDashboard({ data, history }: TelemetryDashboardProps) {
                 <div className="px-3 py-2 bg-muted rounded-md">
                     <div className="text-xs">Gnd Spd</div>
                     <div className="font-semibold">{(data.groundspeed ?? 0).toFixed(2)} m/s</div>
+                </div>
+                <div className="px-3 py-2 bg-muted rounded-md">
+                    <div className="text-xs">Waypoint</div>
+                    <div className="font-semibold">
+                        {data.currentWaypointIndex && data.totalWaypoints 
+                            ? `${data.currentWaypointIndex}/${data.totalWaypoints}` 
+                            : "-"}
+                    </div>
                 </div>
             </div>
 

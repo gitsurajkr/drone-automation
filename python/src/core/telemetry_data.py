@@ -1,8 +1,9 @@
 from datetime import datetime
 
 class TelemetryData:
-    def __init__(self, vehicle):
+    def __init__(self, vehicle, controller=None):
         self.vehicle = vehicle
+        self.controller = controller
 
     async def snapshot(self):
         if self.vehicle is None:
@@ -109,6 +110,47 @@ class TelemetryData:
             "last_heartbeat": fmt(last_heartbeat) if last_heartbeat else None,
             "system_status": str(system_status)
         }
+
+        # Add distance to waypoint if available
+        if self.controller and hasattr(self.controller, 'waypoint_manager') and self.controller.waypoint_manager.current_mission:
+            try:
+                current_mission = self.controller.waypoint_manager.current_mission
+                if (current_mission.status == "IN_PROGRESS" and 
+                    hasattr(current_mission, 'current_waypoint_index') and
+                    current_mission.current_waypoint_index < len(current_mission.waypoints)):
+                    
+                    current_wp = current_mission.waypoints[current_mission.current_waypoint_index]
+                    if loc_rel or loc_global:
+                        current_lat = (loc_rel or loc_global).lat
+                        current_lon = (loc_rel or loc_global).lon
+                        
+                        # Calculate distance using NavigationUtils
+                        from ..navigation.navigation_utils import NavigationUtils
+                        distance_to_waypoint = NavigationUtils.calculate_distance(
+                            (current_lat, current_lon),
+                            (current_wp[0], current_wp[1])  # waypoint is (lat, lon, alt)
+                        )
+                        data["distance_to_waypoint"] = fmt(distance_to_waypoint)
+                        data["current_waypoint_index"] = current_mission.current_waypoint_index + 1
+                        data["total_waypoints"] = len(current_mission.waypoints)
+                    else:
+                        data["distance_to_waypoint"] = None
+                        data["current_waypoint_index"] = current_mission.current_waypoint_index + 1
+                        data["total_waypoints"] = len(current_mission.waypoints)
+                else:
+                    data["distance_to_waypoint"] = None
+                    data["current_waypoint_index"] = None
+                    data["total_waypoints"] = None
+            except Exception as e:
+                # Don't crash telemetry on waypoint calculation errors
+                data["distance_to_waypoint"] = None
+                data["current_waypoint_index"] = None
+                data["total_waypoints"] = None
+        else:
+            data["distance_to_waypoint"] = None
+            data["current_waypoint_index"] = None
+            data["total_waypoints"] = None
+
         return data
 
     def print_stats(self, data, indent=0):

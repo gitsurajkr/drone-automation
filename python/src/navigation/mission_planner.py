@@ -39,76 +39,24 @@ class MissionPlanner:
         """Remove a waypoint by index."""
         if 0 <= index < len(self.waypoints):
             removed = self.waypoints.pop(index)
-            print(f"🗑️ Removed waypoint {index + 1}: {removed[0]:.6f}, {removed[1]:.6f}, {removed[2]}m")
+            print(f"Removed waypoint {index + 1}: {removed[0]:.6f}, {removed[1]:.6f}, {removed[2]}m")
             return True
         else:
             print(f"❌ Invalid waypoint index: {index + 1}")
             return False
     
     def calculate_distance(self, wp1: Tuple[float, float, float], wp2: Tuple[float, float, float]) -> float:
-        """Calculate distance between two waypoints using Haversine formula."""
-        lat1, lon1, _ = wp1
-        lat2, lon2, _ = wp2
-        
-        # Haversine formula
-        R = 6371000  # Earth radius in meters
-        lat1_rad = math.radians(lat1)
-        lat2_rad = math.radians(lat2)
-        delta_lat = math.radians(lat2 - lat1)
-        delta_lon = math.radians(lon2 - lon1)
-        
-        a = (math.sin(delta_lat/2)**2 + 
-             math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon/2)**2)
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-        
-        return R * c
+        """Calculate distance between two waypoints using NavigationUtils."""
+        from .navigation_utils import NavigationUtils
+        return NavigationUtils.calculate_distance(wp1[:2], wp2[:2])
     
     def calculate_mission_stats(self) -> Dict[str, Any]:
-        """Calculate mission statistics."""
-        if len(self.waypoints) < 2:
-            return {
-                "total_waypoints": len(self.waypoints),
-                "total_distance": 0,
-                "estimated_flight_time": 0,
-                "altitude_range": (0, 0),
-                "bounding_box": None
-            }
+        """Calculate mission statistics using MissionCalculator."""
+        from .navigation_utils import MissionCalculator
         
-        # Calculate total distance
-        total_distance = 0
-        for i in range(len(self.waypoints) - 1):
-            distance = self.calculate_distance(self.waypoints[i], self.waypoints[i + 1])
-            total_distance += distance
-        
-        # Calculate altitude range
-        altitudes = [wp[2] for wp in self.waypoints]
-        min_alt = min(altitudes)
-        max_alt = max(altitudes)
-        
-        # Calculate bounding box
-        lats = [wp[0] for wp in self.waypoints]
-        lons = [wp[1] for wp in self.waypoints]
-        bounding_box = {
-            "min_lat": min(lats),
-            "max_lat": max(lats),
-            "min_lon": min(lons),
-            "max_lon": max(lons)
-        }
-        
-        # Estimate flight time (assuming 10 m/s average speed + hover time)
-        hover_time = len(self.waypoints) * 5  # 5 seconds per waypoint
-        travel_time = total_distance / 10  # 10 m/s average speed
-        estimated_flight_time = travel_time + hover_time + 60  # +60s for takeoff/landing
-        
-        self.mission_stats = {
-            "total_waypoints": len(self.waypoints),
-            "total_distance": total_distance,
-            "estimated_flight_time": estimated_flight_time,
-            "altitude_range": (min_alt, max_alt),
-            "bounding_box": bounding_box
-        }
-        
-        return self.mission_stats
+        stats = MissionCalculator.calculate_mission_stats(self.waypoints)
+        self.mission_stats = stats
+        return stats
     
     def validate_mission(self) -> Tuple[bool, List[str]]:
         """Validate the mission for safety and feasibility."""
