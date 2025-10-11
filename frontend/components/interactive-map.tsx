@@ -197,7 +197,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
                     }
                     const lat = e.latLng.lat()
                     const lng = e.latLng.lng()
-                    const wp: DrawnWaypoint = { lat, lng, altitude: 20 } // Default to 20m altitude
+                    const wp: DrawnWaypoint = { lat, lng, altitude: 20 } 
                     console.log("[Sky Navigator] Adding waypoint:", wp)
                     setDrawnPath((prev) => {
                         const next = [...prev, wp]
@@ -241,8 +241,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
             
             mapInstanceRef.current = null
         }
-        // We intentionally do not include isDrawing/droneData in deps here for controlled updates below
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+
     }, [])
 
     // Helper to update drawn path polyline + waypoint markers
@@ -295,7 +294,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
     const startDrawing = () => {
         console.log("[Sky Navigator] startDrawing called")
         setIsDrawing(true)
-        isDrawingRef.current = true // Update ref immediately
+        isDrawingRef.current = true 
         setDrawnPath([])
         if (polylineRef.current) {
             polylineRef.current.setMap(null)
@@ -304,16 +303,15 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
         waypointMarkersRef.current.forEach((m) => m.setMap && m.setMap(null))
         waypointMarkersRef.current = []
         
-        // Disable map dragging and set crosshair cursor for drawing
         if (mapInstanceRef.current) {
             console.log("[Sky Navigator] Setting map options for drawing mode")
             mapInstanceRef.current.setOptions({ 
-                draggable: false,  // Disable map dragging
+                draggable: false,  
                 draggableCursor: 'crosshair',
                 draggingCursor: 'crosshair',
-                gestureHandling: 'cooperative',  // Keep gesture handling but disable dragging
-                scrollwheel: false,  // Disable scroll zoom while drawing
-                disableDoubleClickZoom: true  // Disable double-click zoom
+                gestureHandling: 'cooperative', 
+                scrollwheel: false,  
+                disableDoubleClickZoom: true  
             })
         } else {
             console.log("[Sky Navigator] Map instance not ready")
@@ -469,10 +467,6 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
             console.error("Failed to get mission status:", error)
         }
     }
-
-    // Removed waypoint generation - using manual path drawing only
-
-
 
     // Button click handlers
     const handleDrawPath = () => startDrawing()
@@ -784,7 +778,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
                         >
                             Mission Status
                         </Button>
-
+``
                         <Button
                             variant="outline"
                             size="sm"
@@ -821,7 +815,7 @@ export function InteractiveMap({ droneData, onCommand, isConnected, takeoffProgr
                     </div>
 
                     {/* GPS Coordinates - Right Side */}
-                    <div className="absolute top-4 right-4 z-10 bg-black/80 backdrop-blur-sm text-white px-3 py-2 rounded-lg text-sm font-mono shadow-lg border border-white/10">
+                    <div className="absolute top-40 left-4 z-10 bg-black/80 backdrop-blur-sm text-white px-3 py-2 rounded-lg text-sm font-mono shadow-lg border border-white/10">
                         <div className="space-y-1">
                             <div>Lat: <span className="text-green-400">{(droneData?.gps?.latitude ?? 0).toFixed(6)}</span></div>
                             <div>Lng: <span className="text-green-400">{(droneData?.gps?.longitude ?? 0).toFixed(6)}</span></div>

@@ -169,8 +169,9 @@ async def handle_connect(start_telemetry_func, conn) -> Dict[str, Any]:
         result = {"status": "error", "detail": "connection timeout", "drone_connected": False}
         if logger:
             logger.error("Connection attempt timed out")
-            
+
     except Exception as e:
+        # On connection failure, attach a safety report if possible
         result = {"status": "error", "detail": f"connection failed: {str(e)}", "drone_connected": False}
         if logger:
             logger.error(f"Connection failed: {e}")

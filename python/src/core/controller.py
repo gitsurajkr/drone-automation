@@ -376,7 +376,7 @@ class Controller:
             return False
 
     async def pre_arm_throttle_check(self):
-        """Perform throttle safety check before arming."""
+        # Perform throttle safety check before arming.
         if not self._vehicle_ready(require_armable=False):
             return False
             

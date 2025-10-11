@@ -223,7 +223,6 @@ class WaypointMissionManager:
                                 'mission_id': mission.mission_id
                             }
                     else:
-                        # Attempt minimal takeoff using vehicle.simple_takeoff if controller not present
                         try:
                             vehicle.simple_takeoff(takeoff_altitude)
                             # Wait until altitude reached or timeout
@@ -249,7 +248,7 @@ class WaypointMissionManager:
             
             # Execute waypoints
             mission.status = "ACTIVE"
-            print(f"[MISSION] Starting waypoint navigation - {len(processed_waypoints)} waypoints total")
+            # print(f"[MISSION] Starting waypoint navigation - {len(processed_waypoints)} waypoints total")
             self.flight_logger.log_event('waypoint_navigation_started', {
                 'mission_id': mission.mission_id,
                 'total_waypoints': len(processed_waypoints),
@@ -372,12 +371,10 @@ class WaypointMissionManager:
                             print(f"[POST-MISSION] Executing LAND - Landing at current position")
                             await controller.land()
                             print(f"[POST-MISSION] LAND command sent - Drone descending")
-                        elif action == "LOITER":
+                        elif action == "LOITER" :
                             print(f"[POST-MISSION] Executing LOITER - Hovering at final waypoint")
-                            # Set to LOITER mode to hover at final waypoint
                             vehicle = getattr(self.connection, 'vehicle', None)
                             if vehicle:
-                                from dronekit import VehicleMode
                                 vehicle.mode = VehicleMode("LOITER")
                                 print(f"[POST-MISSION] Mode switched to LOITER - Drone hovering at {final_position['alt']:.1f}m altitude")
                         else:
@@ -459,7 +456,7 @@ class WaypointMissionManager:
             
             # Navigate to waypoint
             target_location = LocationGlobalRelative(lat, lon, alt)
-            print(f"[WAYPOINT-{wp_num}] 🎯 Sending navigation command to drone")
+            print(f"[WAYPOINT-{wp_num}] Sending navigation command to drone")
             print(f"[WAYPOINT-{wp_num}] From: {start_pos['lat']:.6f}, {start_pos['lon']:.6f}, {start_pos['alt']:.1f}m")
             print(f"[WAYPOINT-{wp_num}] To: {lat:.6f}, {lon:.6f}, {alt:.1f}m")
             
@@ -509,7 +506,7 @@ class WaypointMissionManager:
                         'distance_remaining': distance,
                         'current_status': current_status,
                         'elapsed_time': elapsed,
-                        'progress_percent': max(0, min(100, (1 - distance/100) * 100))  # Rough progress
+                        'progress_percent': max(0, min(100, (1 - distance/100) * 100)) 
                     })
                     
                     last_log_time = elapsed

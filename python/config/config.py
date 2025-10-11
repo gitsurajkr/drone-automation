@@ -46,6 +46,7 @@ class WaypointConfig:
     AUTO_RTL_ON_MISSION_COMPLETE = True  # Automatically RTL after waypoint mission completes
     POST_MISSION_ACTION = "RTL"          # Options: "RTL", "LOITER", "LAND", "NONE"
     
+
     # Mission retry settings
     MAX_WAYPOINT_FAILURES = 2         # Maximum failed waypoints before abort
     STALL_DETECTION_THRESHOLD = 0.5   # Minimum progress in meters
@@ -437,11 +438,86 @@ class FlightLogger:
     
     def log_event(self, event_type: str, data: Dict[str, Any]):
         """Log generic flight event with structured data."""
+        # Human-friendly logging for important safety events
+        try:
+            if event_type in ("safety_check_failed", "gps_check_failed", "battery_check_failed"):
+                # Provide clearer warnings for safety failures
+                reason = data.get('reason', 'unknown') if isinstance(data, dict) else str(data)
+                if event_type == 'gps_check_failed':
+                    fix = data.get('fix_type') if isinstance(data, dict) else None
+                    sats = data.get('satellites') or data.get('satellites', data.get('satellites_visible')) if isinstance(data, dict) else None
+                    self.logger.warning(f"SAFETY: GPS check failed - reason={reason}, fix_type={fix}, satellites={sats}")
+                    return
+                if event_type == 'battery_check_failed':
+                    level = data.get('level') if isinstance(data, dict) else None
+                    voltage = data.get('voltage') if isinstance(data, dict) else None
+                    self.logger.warning(f"SAFETY: Battery check failed - reason={reason}, level={level}, voltage={voltage}")
+                    return
+                # Generic safety failure
+                self.logger.warning(f"SAFETY: Check failed - {reason} | data={data}")
+                return
+            if event_type == 'safety_check_passed':
+                self.logger.info(f"SAFETY: Check passed | data={data}")
+                return
+        except Exception:
+            # fall through to normal handling if anything goes wrong
+            pass
+        # Special-case verbose/high-frequency events to keep logs readable.
+        try:
+            if event_type and event_type.startswith('waypoint_progress'):
+                # waypoint progress updates can be frequent - log concise progress only
+                wp = data.get('waypoint_number') or data.get('current_waypoint') if isinstance(data, dict) else None
+                percent = data.get('progress_percent') if isinstance(data, dict) else None
+                if percent is None:
+                    percent = data.get('percent') if isinstance(data, dict) else None
+
+                if percent is not None:
+                    try:
+                        pct = int(round(float(percent)))
+                    except Exception:
+                        pct = percent
+                    self.logger.info(f"WAYPOINT_PROGRESS: wp={wp}, {pct}%")
+                else:
+                    # Fallback to distance if percent not provided
+                    dist = data.get('distance_remaining') if isinstance(data, dict) else None
+                    if dist is not None:
+                        try:
+                            d = float(dist)
+                            self.logger.info(f"WAYPOINT_PROGRESS: wp={wp}, {d:.1f}m remaining")
+                        except Exception:
+                            self.logger.info(f"WAYPOINT_PROGRESS: wp={wp}, dist={dist}")
+                    else:
+                        self.logger.info(f"WAYPOINT_PROGRESS: wp={wp}")
+                return
+        except Exception:
+            # If anything goes wrong with the compact logging path, fall back to generic logging
+            pass
+
         if event_type in FlightLoggingConfig.LOG_EVENT_TYPES:
             level = logging.ERROR if 'emergency' in event_type.lower() else logging.INFO
             self.logger.log(level, f"EVENT: type={event_type}, data={data}")
         else:
-            self.logger.warning(f"UNKNOWN_EVENT: type={event_type}, data={data}")
+            # For unknown events, log a shorter summary instead of dumping large dicts
+            try:
+                summary = None
+                if isinstance(data, dict):
+                    # Try to capture small useful fields
+                    summary_parts = []
+                    if 'mission_id' in data:
+                        summary_parts.append(f"mission_id={data.get('mission_id')}")
+                    if 'waypoint_number' in data:
+                        summary_parts.append(f"wp={data.get('waypoint_number')}")
+                    if 'progress_percent' in data:
+                        summary_parts.append(f"pct={int(round(float(data.get('progress_percent'))))}%")
+                    if summary_parts:
+                        summary = ', '.join(summary_parts)
+
+                if summary:
+                    self.logger.warning(f"UNKNOWN_EVENT: type={event_type}, {summary}")
+                else:
+                    self.logger.warning(f"UNKNOWN_EVENT: type={event_type}, data={data}")
+            except Exception:
+                self.logger.warning(f"UNKNOWN_EVENT: type={event_type}, data={data}")
     
     def log_waypoint_reached(self, waypoint_number: int, total_waypoints: int, coordinates: tuple, time_taken: float = 0.0):
         """Log waypoint reached event."""

@@ -269,65 +269,7 @@ export function EnhancedMapView({ droneData, onCommand, alerts, logs, isConnecte
                 </Card>
 
                 {/* Waypoints */}
-                <Card className="bg-card border-border">
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Waypoints</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                        <div className="space-y-2">
-                            <Input
-                                placeholder="Waypoint name"
-                                value={newWaypoint.name}
-                                onChange={(e) => setNewWaypoint({ ...newWaypoint, name: e.target.value })}
-                                className="h-8"
-                            />
-                            <div className="grid grid-cols-2 gap-2">
-                                <Input
-                                    placeholder="Latitude"
-                                    value={newWaypoint.lat}
-                                    onChange={(e) => setNewWaypoint({ ...newWaypoint, lat: e.target.value })}
-                                    className="h-8"
-                                />
-                                <Input
-                                    placeholder="Longitude"
-                                    value={newWaypoint.lng}
-                                    onChange={(e) => setNewWaypoint({ ...newWaypoint, lng: e.target.value })}
-                                    className="h-8"
-                                />
-                            </div>
-                            <Input
-                                placeholder="Altitude (m)"
-                                value={newWaypoint.altitude}
-                                onChange={(e) => setNewWaypoint({ ...newWaypoint, altitude: e.target.value })}
-                                className="h-8"
-                            />
-                            <Button onClick={addWaypoint} size="sm" className="w-full">
-                                <Plus className="h-4 w-4 mr-2" />
-                                Add Waypoint
-                            </Button>
-                        </div>
-
-                        <ScrollArea className="h-32">
-                            <div className="space-y-2">
-                                {waypoints.map((waypoint, index) => (
-                                    <div key={waypoint.id} className="flex items-center justify-between p-2 bg-muted rounded text-sm">
-                                        <div>
-                                            <div className="font-medium">
-                                                {index + 1}. {waypoint.name}
-                                            </div>
-                                            <div className="text-xs text-muted-foreground font-mono">
-                                                {waypoint.lat.toFixed(4)}, {waypoint.lng.toFixed(4)}
-                                            </div>
-                                        </div>
-                                        <Button variant="ghost" size="sm" onClick={() => removeWaypoint(waypoint.id)}>
-                                            <Trash2 className="h-3 w-3" />
-                                        </Button>
-                                    </div>
-                                ))}
-                            </div>
-                        </ScrollArea>
-                    </CardContent>
-                </Card>
+                
 
                 {/* Recent Alerts */}
                 <Card className="bg-card border-border ">

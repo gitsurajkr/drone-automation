@@ -119,33 +119,66 @@ class FlightSafetyManager:
     def _validate_battery_safety(self, vehicle, emergency_override: bool = False) -> bool:
         """Validate battery safety requirements."""
         battery = getattr(vehicle, "battery", None)
+        # If battery object is missing or reports zero-values, treat as missing telemetry
         if not battery:
             self.flight_logger.log_event('battery_check_failed', {'reason': 'no_battery_data'})
             return emergency_override
 
-        voltage = getattr(battery, "voltage", 0) or 0
-        level = getattr(battery, "level", 0) or 0
+        # Extract values safely
+        try:
+            voltage = getattr(battery, "voltage", None)
+            current = getattr(battery, "current", None)
+            level = getattr(battery, "level", None)
+        except Exception:
+            voltage = None
+            current = None
+            level = None
 
-        # Check battery level
-        if level < BatterySafetyConfig.MIN_BATTERY_LEVEL:
-            if not emergency_override:
-                self.flight_logger.log_event('battery_check_failed', {
-                    'reason': 'low_battery_level',
-                    'level': level,
-                    'required': BatterySafetyConfig.MIN_BATTERY_LEVEL
-                })
-                return False
+        # Consider None or zero as missing telemetry
+        missing_voltage = (voltage is None) or (isinstance(voltage, (int, float)) and float(voltage) <= 0.0)
+        missing_level = (level is None) or (isinstance(level, (int, float)) and float(level) <= 0.0)
 
-        # Check battery voltage
-        min_voltage = BatterySafetyConfig.get_min_voltage_for_cell_count(voltage)
-        if voltage < min_voltage:
-            if not emergency_override:
-                self.flight_logger.log_event('battery_check_failed', {
-                    'reason': 'low_battery_voltage',
-                    'voltage': voltage,
-                    'min_required': min_voltage
-                })
-                return False
+        if missing_voltage and missing_level:
+            # No useful battery telemetry available
+            self.flight_logger.log_event('battery_check_failed', {
+                'reason': 'battery_telemetry_missing',
+                'voltage': voltage,
+                'level': level,
+                'current': current
+            })
+            return emergency_override
+
+        # If level provided, check against threshold
+        if level is not None:
+            try:
+                lvl = float(level)
+            except Exception:
+                lvl = None
+            if lvl is not None and lvl < BatterySafetyConfig.MIN_BATTERY_LEVEL:
+                if not emergency_override:
+                    self.flight_logger.log_event('battery_check_failed', {
+                        'reason': 'low_battery_level',
+                        'level': lvl,
+                        'required': BatterySafetyConfig.MIN_BATTERY_LEVEL
+                    })
+                    return False
+
+        # If voltage provided, verify against minimum
+        if voltage is not None:
+            try:
+                volt = float(voltage)
+            except Exception:
+                volt = None
+            if volt is not None:
+                min_voltage = BatterySafetyConfig.get_min_voltage_for_cell_count(volt)
+                if volt < min_voltage:
+                    if not emergency_override:
+                        self.flight_logger.log_event('battery_check_failed', {
+                            'reason': 'low_battery_voltage',
+                            'voltage': volt,
+                            'min_required': min_voltage
+                        })
+                        return False
 
         return True
     
@@ -156,8 +189,8 @@ class FlightSafetyManager:
             
             if is_takeoff:
                 # More restrictive for takeoff
-                max_alt = min(FlightSafetyConfig.MAX_ALTITUDE, 30.0)  # Max 30m for takeoff
-                min_alt = max(FlightSafetyConfig.MIN_ALTITUDE, 2.0)   # Min 2m for takeoff
+                max_alt = min(FlightSafetyConfig.MAX_ALTITUDE, 30.0)
+                min_alt = max(FlightSafetyConfig.MIN_ALTITUDE, 2.0)   
             else:
                 max_alt = FlightSafetyConfig.MAX_ALTITUDE
                 min_alt = FlightSafetyConfig.MIN_ALTITUDE
@@ -206,9 +239,9 @@ class FlightSafetyManager:
             level = getattr(battery, "level", 0) or 0
             voltage = getattr(battery, "voltage", 0) or 0
             
-            if level <= 10:  # Critical battery
+            if level <= 10:  
                 emergencies.append(f"CRITICAL_BATTERY_LEVEL_{level}%")
-            elif level <= 20:  # Low battery
+            elif level <= 20: 
                 emergencies.append(f"LOW_BATTERY_LEVEL_{level}%")
             
             min_voltage = BatterySafetyConfig.get_min_voltage_for_cell_count(voltage)
@@ -329,14 +362,58 @@ class FlightSafetyManager:
         # Battery status
         battery = getattr(vehicle, "battery", None)
         if battery:
-            level = getattr(battery, "level", 0) or 0
-            voltage = getattr(battery, "voltage", 0) or 0
+            # Include raw battery object for diagnostics
+            try:
+                level = getattr(battery, "level", None)
+                voltage = getattr(battery, "voltage", None)
+                current = getattr(battery, "current", None)
+            except Exception:
+                level = None
+                voltage = None
+                current = None
+
+            # Determine status more permissively when telemetry is missing
+            if (level is None or (isinstance(level, (int, float)) and float(level) <= 0)) and \
+               (voltage is None or (isinstance(voltage, (int, float)) and float(voltage) <= 0)):
+                status = 'UNKNOWN'
+            else:
+                level_val = (int(level) if level is not None else 0)
+                if level_val > 50:
+                    status = 'GOOD'
+                elif level_val > 20:
+                    status = 'LOW'
+                else:
+                    status = 'CRITICAL'
+
             report['battery'] = {
                 'level_percent': level,
                 'voltage': voltage,
-                'min_voltage': BatterySafetyConfig.get_min_voltage_for_cell_count(voltage),
-                'status': 'GOOD' if level > 50 else 'LOW' if level > 20 else 'CRITICAL'
+                'current': current,
+                'min_voltage': BatterySafetyConfig.get_min_voltage_for_cell_count(voltage or 0),
+                'status': status,
+                'raw': repr(battery)
             }
+
+            # If telemetry missing, add recommendation to check power module / telemetry wiring
+            if report['battery']['status'] == 'UNKNOWN':
+                report.setdefault('recommendations', [])
+                report['recommendations'].append(
+                    'Battery telemetry missing (voltage/level=0 or null). Check power module, telemetry wiring, and FC parameter BATT_MONITOR/BATT_CAPACITY.'
+                )
+                # Attempt to include parameter diagnostics if available
+                try:
+                    params = {}
+                    if hasattr(vehicle, 'parameters'):
+                        for p in ('BATT_MONITOR', 'BATT_CAPACITY', 'BATT_ARM_VOLTAGE'):
+                            try:
+                                val = vehicle.parameters.get(p, None)
+                                params[p] = val
+                            except Exception:
+                                params[p] = None
+                    if params:
+                        report['battery']['params'] = params
+                except Exception:
+                    pass
         
         # GPS status
         gps = getattr(vehicle, "gps_0", None)
